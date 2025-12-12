@@ -65,7 +65,7 @@ func (h *LspHandler) Handle(ctx context.Context, conn *jsonrpc2.Conn, req *jsonr
 	return nil, &jsonrpc2.Error{Code: jsonrpc2.CodeMethodNotFound, Message: fmt.Sprintf("method not supported: %s", req.Method)}
 }
 
-func (h *LspHandler) Formatting(ctx context.Context, uri types.DocumentURI, rng *types.Range, opt types.FormattingOptions) ([]types.TextEdit, error) {
+func (h *LspHandler) Formatting(ctx context.Context, notifier LspNotifier, uri types.DocumentURI, rng *types.Range, opt types.FormattingOptions) ([]types.TextEdit, error) {
 	if h.formatTimer != nil {
 		logs.Log.Logf(logs.Debug, "format debounced: %v", h.formatDebounce)
 		return []types.TextEdit{}, nil
@@ -78,7 +78,17 @@ func (h *LspHandler) Formatting(ctx context.Context, uri types.DocumentURI, rng 
 		h.formatMu.Unlock()
 	})
 	h.formatMu.Unlock()
-	return h.langHandler.RunAllFormatters(ctx, uri, rng, opt)
+
+	progress := make(chan types.ProgressParams)
+	defer close(progress)
+
+	go func() {
+		for p := range progress {
+			notifier.Progress(ctx, p)
+		}
+	}()
+
+	return h.langHandler.RunAllFormatters(ctx, uri, rng, opt, progress)
 }
 
 var running = make(map[types.DocumentURI]context.CancelFunc)
@@ -106,8 +116,10 @@ func (h *LspHandler) ScheduleLinting(notifier LspNotifier, uri types.DocumentURI
 		func() {
 			diagnostics := make(chan types.PublishDiagnosticsParams)
 			errors := make(chan error)
+			progress := make(chan types.ProgressParams)
 			defer close(diagnostics)
 			defer close(errors)
+			defer close(progress)
 
 			go func() {
 				for d := range diagnostics {
@@ -122,7 +134,13 @@ func (h *LspHandler) ScheduleLinting(notifier LspNotifier, uri types.DocumentURI
 				}
 			}()
 
-			err := h.langHandler.RunAllLinters(ctx, uri, eventType, diagnostics, errors)
+			go func() {
+				for p := range progress {
+					notifier.Progress(ctx, p)
+				}
+			}()
+
+			err := h.langHandler.RunAllLinters(ctx, uri, eventType, diagnostics, errors, progress)
 			if err != nil {
 				logs.Log.Logln(logs.Error, err.Error())
 				notifier.LogMessage(ctx, types.MessError, err.Error())

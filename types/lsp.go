@@ -1,5 +1,7 @@
 package types
 
+import "github.com/google/uuid"
+
 type DocumentURI string
 
 type InitializeParams struct {
@@ -53,7 +55,7 @@ const (
 
 type ServerCapabilities struct {
 	PositionEncoding           PositionEncodingKind    `json:"positionEncoding,omitempty"`
-	TextDocumentSync           TextDocumentSyncOptions `json:"textDocumentSync,omitempty"`
+	TextDocumentSync           TextDocumentSyncOptions `json:"textDocumentSync"`
 	DocumentFormattingProvider bool                    `json:"documentFormattingProvider,omitempty"`
 	RangeFormattingProvider    bool                    `json:"documentRangeFormattingProvider,omitempty"`
 }
@@ -145,6 +147,44 @@ type PublishDiagnosticsParams struct {
 	URI         DocumentURI  `json:"uri"`
 	Diagnostics []Diagnostic `json:"diagnostics"`
 	Version     int          `json:"version"`
+}
+
+type ProgressToken string
+
+func NewProgressToken() ProgressToken {
+	return ProgressToken(uuid.New().String())
+}
+
+type ProgressParams struct {
+	Token ProgressToken `json:"token"`
+	Value any           `json:"value"`
+}
+
+type workDoneProgressKind string
+
+const (
+	workBegin  workDoneProgressKind = "begin"
+	workReport workDoneProgressKind = "report"
+	workDone   workDoneProgressKind = "end"
+)
+
+type workDoneProgress struct {
+	Kind       workDoneProgressKind `json:"kind"`
+	Title      *string              `json:"title,omitempty"`
+	Message    *string              `json:"message,omitempty"`
+	Percentage *uint                `json:"percentage,omitempty"`
+}
+
+func NewWorkDoneProgressBegin(title string, message *string, percentage *uint) workDoneProgress {
+	return workDoneProgress{Kind: workBegin, Title: &title, Message: message, Percentage: percentage}
+}
+
+func NewWorkDoneProgressReport(message *string, percentage *uint) workDoneProgress {
+	return workDoneProgress{Kind: workReport, Message: message, Percentage: percentage}
+}
+
+func NewWorkDoneProgressEnd(message *string) workDoneProgress {
+	return workDoneProgress{Kind: workDone, Message: message}
 }
 
 // https://microsoft.github.io/language-server-protocol/specifications/lsp/3.17/specification/#formattingOptions

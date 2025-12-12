@@ -8,7 +8,7 @@ import (
 	"github.com/sourcegraph/jsonrpc2"
 )
 
-func (h *LspHandler) HandleTextDocumentFormatting(ctx context.Context, _ *jsonrpc2.Conn, req *jsonrpc2.Request) (result any, err error) {
+func (h *LspHandler) HandleTextDocumentFormatting(ctx context.Context, conn *jsonrpc2.Conn, req *jsonrpc2.Request) (result any, err error) {
 	if req.Params == nil {
 		return nil, &jsonrpc2.Error{Code: jsonrpc2.CodeInvalidParams}
 	}
@@ -18,10 +18,11 @@ func (h *LspHandler) HandleTextDocumentFormatting(ctx context.Context, _ *jsonrp
 		return nil, err
 	}
 
-	return h.Formatting(ctx, params.TextDocument.URI, nil, params.Options)
+	notifier := NewNotifier(conn)
+	return h.Formatting(ctx, *notifier, params.TextDocument.URI, nil, params.Options)
 }
 
-func (h *LspHandler) HandleTextDocumentRangeFormatting(ctx context.Context, _ *jsonrpc2.Conn, req *jsonrpc2.Request) (result any, err error) {
+func (h *LspHandler) HandleTextDocumentRangeFormatting(ctx context.Context, conn *jsonrpc2.Conn, req *jsonrpc2.Request) (result any, err error) {
 	if req.Params == nil {
 		return nil, &jsonrpc2.Error{Code: jsonrpc2.CodeInvalidParams}
 	}
@@ -31,5 +32,6 @@ func (h *LspHandler) HandleTextDocumentRangeFormatting(ctx context.Context, _ *j
 		return nil, err
 	}
 
-	return h.Formatting(ctx, params.TextDocument.URI, &params.Range, params.Options)
+	notifier := NewNotifier(conn)
+	return h.Formatting(ctx, *notifier, params.TextDocument.URI, &params.Range, params.Options)
 }

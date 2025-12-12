@@ -32,3 +32,10 @@ func (n *LspNotifier) PublishDiagnostics(ctx context.Context, params types.Publi
 		"textDocument/publishDiagnostics",
 		&params)
 }
+
+func (n *LspNotifier) Progress(ctx context.Context, params types.ProgressParams) {
+	_ = n.conn.Notify(
+		ctx,
+		"$/progress",
+		&params)
+}

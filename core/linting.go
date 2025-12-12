@@ -18,7 +18,10 @@ var unknownExitCode = -999
 var defaultLintFormats = []string{"%f:%l:%m", "%f:%l:%c:%m"}
 
 func (h *LangHandler) RunAllLinters(
-	ctx context.Context, uri types.DocumentURI, eventType types.EventType, diagnosticsOut chan<- types.PublishDiagnosticsParams, errorsOut chan<- error) error {
+	ctx context.Context, uri types.DocumentURI, eventType types.EventType,
+	diagnosticsOut chan<- types.PublishDiagnosticsParams,
+	errorsOut chan<- error,
+	progress chan<- types.ProgressParams) error {
 	f, ok := h.files[uri]
 	if !ok {
 		return fmt.Errorf("document not found: %v", uri)
@@ -35,6 +38,12 @@ func (h *LangHandler) RunAllLinters(
 		URI:         uri,
 		Diagnostics: make([]types.Diagnostic, 0),
 		Version:     f.Version,
+	}
+
+	progressToken := types.NewProgressToken()
+	progress <- types.ProgressParams{
+		Token: progressToken,
+		Value: types.NewWorkDoneProgressBegin("Linting document", nil, nil),
 	}
 
 	var wg sync.WaitGroup
@@ -57,6 +66,12 @@ func (h *LangHandler) RunAllLinters(
 	}
 
 	wg.Wait()
+
+	progress <- types.ProgressParams{
+		Token: progressToken,
+		Value: types.NewWorkDoneProgressEnd(nil),
+	}
+
 	return nil
 }
 

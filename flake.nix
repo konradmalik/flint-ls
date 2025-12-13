@@ -1,5 +1,5 @@
 {
-  description = "efm langserver env";
+  description = "flint langserver env";
 
   inputs = {
     nixpkgs.url = "github:nixos/nixpkgs/nixpkgs-unstable";
@@ -31,7 +31,7 @@
         in
         {
           default = pkgs.mkShell {
-            name = "efm";
+            name = "flint";
             packages = with pkgs; [
               nodePackages.prettier
               json-schema-for-humans

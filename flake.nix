@@ -34,7 +34,6 @@
             name = "flint";
             packages = with pkgs; [
               nodePackages.prettier
-              json-schema-for-humans
             ];
             inputsFrom = [ self.packages.${system}.default ];
           };

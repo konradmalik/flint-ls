@@ -6,7 +6,6 @@ const Wildcard = "="
 
 type Config struct {
 	Languages      *map[string][]Language `json:"languages,omitempty"`
-	RootMarkers    *[]string              `json:"rootMarkers,omitempty"`
 	LintDebounce   time.Duration          `json:"lintDebounce,omitempty"`
 	FormatDebounce time.Duration          `json:"formatDebounce,omitempty"`
 }

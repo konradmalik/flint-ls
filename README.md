@@ -30,6 +30,8 @@ Notable changes from the original:
     - it may be implemented back in the future if needed, but I've no usage of such linters, and a quick search through [`creativenull/efmls-configs-nvim`](https://github.com/creativenull/efmls-configs-nvim) showed no usage of this property
     - tracked in [#11](https://github.com/konradmalik/flint-ls/issues/11)
 - added Lsp Progress notifications
+- removed `RootMarkers` from root settings. They can only be provided per language now. The use of this was
+  questionable.
 
 ## Sections
 
@@ -115,7 +117,6 @@ Example
 ```json
 {
     "settings": {
-        "rootMarkers": [".git/"],
         "languages": {
             "lua": {
                 "formatCommand": "lua-format -i"
@@ -130,7 +131,6 @@ Example
 ```go
 type Config struct {
 	Languages      *map[string][]Language `json:"languages,omitempty"`
-	RootMarkers    *[]string              `json:"rootMarkers,omitempty"`
 	LintDebounce   time.Duration          `json:"lintDebounce,omitempty"`
 	FormatDebounce time.Duration          `json:"formatDebounce,omitempty"`
 }
@@ -177,13 +177,10 @@ confusing and unpredictable results.
 
 Neovim's built-in LSP client sends `DidChangeConfiguration`.
 
-`init.lua` example (`settings` follows [`schema.md`](schema.md)):
-
 ```lua
 require "lspconfig".flint_ls.setup {
     init_options = {documentFormatting = true},
     settings = {
-        rootMarkers = {".git/"},
         languages = {
             lua = {
                 {formatCommand = "lua-format -i"}

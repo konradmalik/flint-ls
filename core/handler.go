@@ -10,10 +10,9 @@ import (
 )
 
 type LangHandler struct {
-	configs     map[string][]types.Language
-	files       map[types.DocumentURI]*fileRef
-	RootPath    string
-	rootMarkers []string
+	configs  map[string][]types.Language
+	files    map[types.DocumentURI]*fileRef
+	RootPath string
 }
 
 type fileRef struct {
@@ -26,18 +25,15 @@ type fileRef struct {
 
 func NewConfig() *types.Config {
 	languages := make(map[string][]types.Language)
-	rootMarkers := make([]string, 0)
 	return &types.Config{
-		Languages:   &languages,
-		RootMarkers: &rootMarkers,
+		Languages: &languages,
 	}
 }
 
 func NewHandler(config *types.Config) *LangHandler {
 	handler := &LangHandler{
-		configs:     *config.Languages,
-		files:       make(map[types.DocumentURI]*fileRef),
-		rootMarkers: *config.RootMarkers,
+		configs: *config.Languages,
+		files:   make(map[types.DocumentURI]*fileRef),
 	}
 	return handler
 }
@@ -88,9 +84,6 @@ func (h *LangHandler) UpdateConfiguration(config *types.Config) {
 	if config.Languages != nil {
 		h.configs = *config.Languages
 	}
-	if config.RootMarkers != nil {
-		h.rootMarkers = *config.RootMarkers
-	}
 }
 
 func (h *LangHandler) CloseFile(uri types.DocumentURI) error {
@@ -131,9 +124,6 @@ func (h *LangHandler) UpdateFile(uri types.DocumentURI, text string, version *in
 
 func (h *LangHandler) findRootPath(fname string, lang types.Language) string {
 	if dir := matchRootPath(fname, lang.RootMarkers); dir != "" {
-		return dir
-	}
-	if dir := matchRootPath(fname, h.rootMarkers); dir != "" {
 		return dir
 	}
 

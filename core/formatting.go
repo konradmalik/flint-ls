@@ -20,7 +20,9 @@ var (
 	reEquals = regexp.MustCompile(`\$\{([^=}]+)=([^}]+)\}`)
 )
 
-func (h *LangHandler) RunAllFormatters(ctx context.Context, uri types.DocumentURI, rng *types.Range, options types.FormattingOptions) ([]types.TextEdit, error) {
+func (h *LangHandler) RunAllFormatters(
+	ctx context.Context, uri types.DocumentURI, rng *types.Range, options types.FormattingOptions,
+	progress chan<- types.ProgressParams) ([]types.TextEdit, error) {
 	f, ok := h.files[uri]
 	if !ok {
 		return nil, fmt.Errorf("document not found: %v", uri)
@@ -33,6 +35,12 @@ func (h *LangHandler) RunAllFormatters(ctx context.Context, uri types.DocumentUR
 	if len(configs) == 0 {
 		logs.Log.Logf(logs.Warn, "no matching format configs for LanguageID: %v", f.LanguageID)
 		return nil, nil
+	}
+
+	progressToken := types.NewProgressToken()
+	progress <- types.ProgressParams{
+		Token: progressToken,
+		Value: types.NewWorkDoneProgressBegin("Formatting document", nil, nil),
 	}
 
 	originalText := f.Text
@@ -59,6 +67,12 @@ func (h *LangHandler) RunAllFormatters(ctx context.Context, uri types.DocumentUR
 	}
 
 	logs.Log.Logln(logs.Info, "format succeeded")
+
+	progress <- types.ProgressParams{
+		Token: progressToken,
+		Value: types.NewWorkDoneProgressEnd(nil),
+	}
+
 	return ComputeEdits(uri, originalText, formattedText)
 }
 

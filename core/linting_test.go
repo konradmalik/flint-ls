@@ -904,8 +904,10 @@ func (h *LangHandler) getAllPublishDiagnosticsParamsForUriWithEvent(t *testing.T
 	func() {
 		diagnosticsChan := make(chan types.PublishDiagnosticsParams)
 		errorsChan := make(chan error)
+		progressChan := blackHoleProgress()
 		defer close(diagnosticsChan)
 		defer close(errorsChan)
+		defer close(progressChan)
 
 		wg.Go(func() {
 			for e := range errorsChan {
@@ -919,7 +921,7 @@ func (h *LangHandler) getAllPublishDiagnosticsParamsForUriWithEvent(t *testing.T
 			}
 		})
 
-		err := h.RunAllLinters(t.Context(), uri, event, diagnosticsChan, errorsChan)
+		err := h.RunAllLinters(t.Context(), uri, event, diagnosticsChan, errorsChan, progressChan)
 		if err != nil {
 			errorsOut = append(errorsOut, err.Error())
 		}

@@ -99,7 +99,7 @@ func TestRunFormatters_Success(t *testing.T) {
 			"go": {{FormatCommand: "cat", RequireMarker: false}},
 		},
 	}
-	edits, err := h.RunAllFormatters(t.Context(), types.DocumentURI("file://"+testfile), nil, nil)
+	edits, err := runAllFormatters(t, h, types.DocumentURI("file://"+testfile))
 	assert.NoError(t, err)
 	assert.NotNil(t, edits)
 }
@@ -130,7 +130,7 @@ func TestRunFormatters_UsesPreviousText(t *testing.T) {
 			},
 		},
 	}
-	edits, err := h.RunAllFormatters(t.Context(), types.DocumentURI("file://"+testfile), nil, nil)
+	edits, err := runAllFormatters(t, h, types.DocumentURI("file://"+testfile))
 	assert.NoError(t, err)
 	assert.Equal(t, "helloconfig1config2\n", edits[0].NewText)
 }
@@ -159,7 +159,13 @@ func TestRunFormatters_RequireRootMatcher(t *testing.T) {
 		},
 	}
 
-	d, err := h.RunAllFormatters(t.Context(), uri, nil, types.FormattingOptions{})
+	edits, err := runAllFormatters(t, h, uri)
 	assert.NoError(t, err)
-	assert.Empty(t, d)
+	assert.Empty(t, edits)
+}
+
+func runAllFormatters(t *testing.T, h *LangHandler, uri types.DocumentURI) ([]types.TextEdit, error) {
+	progress := blackHoleProgress()
+	defer close(progress)
+	return h.RunAllFormatters(t.Context(), uri, nil, types.FormattingOptions{}, progress)
 }

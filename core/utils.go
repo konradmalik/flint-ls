@@ -65,3 +65,13 @@ func boolOrDefault(b *bool, def bool) bool {
 }
 
 func boolPtr(v bool) *bool { return &v }
+
+func blackHoleProgress() chan types.ProgressParams {
+	ch := make(chan types.ProgressParams)
+	go func() {
+		for range ch {
+			// discard values
+		}
+	}()
+	return ch
+}

@@ -46,6 +46,7 @@ func buildExecCmd(ctx context.Context, command, rootPath string, textToFormat st
 	if stdin {
 		cmd.Stdin = strings.NewReader(textToFormat)
 	}
+	makeCmdKillable(cmd)
 
 	return cmd
 }

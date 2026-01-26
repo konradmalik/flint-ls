@@ -1,7 +1,7 @@
 # CLI Enumeration Flags
 [![Go Reference](https://pkg.go.dev/badge/github.com/thediveo/enumflag.svg)](https://pkg.go.dev/github.com/thediveo/enumflag/v2)
 [![GitHub](https://img.shields.io/github/license/thediveo/enumflag)](https://img.shields.io/github/license/thediveo/enumflag)
-![build and test](https://github.com/thediveo/enumflag/workflows/build%20and%20test/badge.svg?branch=master)
+![build and test](https://github.com/thediveo/enumflag/actions/workflows/buildandtest.yaml/badge.svg?branch=master)
 [![Go Report Card](https://goreportcard.com/badge/github.com/thediveo/enumflag/v2)](https://goreportcard.com/report/github.com/thediveo/enumflag/v2)
 ![Coverage](https://img.shields.io/badge/Coverage-100.0%25-brightgreen)
 
@@ -24,8 +24,11 @@ enumeration values either with a single flag `--mode=foo,bar` or multiple flag
 calls, such as `--mode=foo --mode=bar`.
 
 Application programmers then simply deal with enumeration values in form of
-uints (or ints, _erm_, anything that satisfies `constraints.Integer`s),
+uints (or ints, _erm_, anything that satisfies `comparable`s),
 liberated from parsing strings and validating enumeration flags.
+
+For devcontainer instructions, please see the [section "DevContainer"
+below](#devcontainer).
 
 ## Alternatives
 
@@ -34,7 +37,6 @@ following packages offer you a minimalist approach:
 
 - [hashicorp/packer/helper/enumflag](https://godoc.org/github.com/hashicorp/packer/helper/enumflag)
   really is a reduced-to-the-max version without any whistles and bells.
-
 - [creachadair/goflags/enumflag](https://godoc.org/github.com/creachadair/goflags/enumflag)
   has a similar, but slightly more elaborate API with additional "indices" for
   enumeration values.
@@ -74,7 +76,7 @@ import (
 )
 
 // ① Define your new enum flag type. It can be derived from enumflag.Flag,
-// but it doesn't need to be as long as it satisfies constraints.Integer.
+// but it doesn't need to be as long as it satisfies comparable.
 type FooMode enumflag.Flag
 
 // ② Define the enumeration values for FooMode.
@@ -150,8 +152,7 @@ registering have to be carried out as separate instructions.
 Please note for shell completion to work, your root command needs to have at
 least one (explicit) sub command. Otherwise, `cobra` won't automatically add an
 additional `completion` sub command. For more details, please refer to cobra's
-documentation on [Generating shell
-completions](https://github.com/spf13/cobra/blob/main/shell_completions.md).
+documentation on [Generating shellcompletions](https://github.com/spf13/cobra/blob/main/site/content/completions/_index.md).
 
 ### Use Existing Enum Types
 
@@ -252,7 +253,7 @@ In other situations you might _not_ want to have a default value set, because a
 particular CLI flag is mandatory (using cobra's
 [MarkFlagRequired](https://pkg.go.dev/github.com/spf13/cobra#MarkFlagRequired)).
 Here, cobra's help should not show a (useless) default enum flag setting but
-only the availabe enum values.
+only the available enum values.
 
 **Don't assign the zero value** of your enum type to any value, except the
 "non-existing" default.
@@ -305,7 +306,7 @@ import (
 )
 
 // ① Define your new enum flag type. It can be derived from enumflag.Flag,
-// but it doesn't need to be as long as it satisfies constraints.Integer.
+// but it doesn't need to be as long as it satisfies comparable.
 type MooMode enumflag.Flag
 
 // ② Define the enumeration values for FooMode.
@@ -344,48 +345,17 @@ func Example_slice() {
 }
 ```
 
-## VSCode Tasks
+## DevContainer
 
-The included `enumflag.code-workspace` defines the following tasks:
+> [!CAUTION]
+>
+> Do **not** use VSCode's "~~Dev Containers: Clone Repository in Container
+> Volume~~" command, as it is utterly broken by design, ignoring
+> `.devcontainer/devcontainer.json`.
 
-- **View Go module documentation** task: installs `pkgsite`, if not done already
-  so, then starts `pkgsite` and opens VSCode's integrated ("simple") browser to
-  show the go-plugger/v2 documentation.
-
-- **Build workspace** task: builds all, including the shared library test
-  plugin.
-
-- **Run all tests with coverage** task: does what it says on the tin and runs
-  all tests with coverage.
-
-#### Aux Tasks
-
-- _pksite service_: auxilliary task to run `pkgsite` as a background service
-  using `scripts/pkgsite.sh`. The script leverages browser-sync and nodemon to
-  hot reload the Go module documentation on changes; many thanks to @mdaverde's
-  [_Build your Golang package docs
-  locally_](https://mdaverde.com/posts/golang-local-docs) for paving the way.
-  `scripts/pkgsite.sh` adds automatic installation of `pkgsite`, as well as the
-  `browser-sync` and `nodemon` npm packages for the local user.
-- _view pkgsite_: auxilliary task to open the VSCode-integrated "simple" browser
-  and pass it the local URL to open in order to show the module documentation
-  rendered by `pkgsite`. This requires a detour via a task input with ID
-  "_pkgsite_".
-
-## Make Targets
-
-- `make`: lists all targets.
-- `make coverage`: runs all tests with coverage and then **updates the coverage
-  badge in `README.md`**.
-- `make pkgsite`: installs [`x/pkgsite`](golang.org/x/pkgsite/cmd/pkgsite), as
-  well as the [`browser-sync`](https://www.npmjs.com/package/browser-sync) and
-  [`nodemon`](https://www.npmjs.com/package/nodemon) npm packages first, if not
-  already done so. Then runs the `pkgsite` and hot reloads it whenever the
-  documentation changes.
-- `make report`: installs
-  [`@gojp/goreportcard`](https://github.com/gojp/goreportcard) if not yet done
-  so and then runs it on the code base.
-- `make test`: runs all tests.
+1. `git clone https://github.com/thediveo/enumflag`
+2. in VSCode: Ctrl+Shift+P, "Dev Containers: Open Workspace in Container..."
+3. select `enumflag.code-workspace` and off you go...
 
 ## Contributing
 
@@ -393,5 +363,5 @@ Please see [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## Copyright and License
 
-`lxkns` is Copyright 2020, 2023 Harald Albrecht, and licensed under the Apache
+`lxkns` is Copyright 2020, 2025 Harald Albrecht, and licensed under the Apache
 License, Version 2.0.

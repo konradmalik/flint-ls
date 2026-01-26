@@ -1,6 +1,7 @@
-config
-.vim-lsp-settings
+.env*
+
 flint-ls
 flint-ls.exe
-.direnv
+
 result
+.direnv

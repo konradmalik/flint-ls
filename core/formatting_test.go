@@ -18,35 +18,54 @@ func TestNormalizedFilenameFromURI(t *testing.T) {
 	assert.Equal(t, "/tmp/TestFile.txt", fname)
 }
 
-func TestApplyOptionsPlaceholders_DefaultTypes(t *testing.T) {
-	cmd := "echo ${--flag:opt} ${--flag2=opt}"
-	opts := types.FormattingOptions{
-		"opt": "value",
+func TestApplyOptionsPlaceholders(t *testing.T) {
+	tests := []struct {
+		name     string
+		cmd      string
+		opts     types.FormattingOptions
+		expected []string // substrings that should be present in output
+		exact    string   // exact expected output (if specified, takes precedence)
+	}{
+		{
+			name: "default types",
+			cmd:  "echo ${--flag:opt} ${--flag2=opt}",
+			opts: types.FormattingOptions{
+				"opt": "value",
+			},
+			expected: []string{"--flag value", "--flag2=value"},
+		},
+		{
+			name: "bool true",
+			cmd:  "echo ${--flag:opt} ${--flag2=opt}",
+			opts: types.FormattingOptions{
+				"opt": true,
+			},
+			exact: "echo --flag --flag2",
+		},
+		{
+			name: "bool false with negation",
+			cmd:  "echo ${--flag:!opt} ${--flag2=!opt}",
+			opts: types.FormattingOptions{
+				"opt": false,
+			},
+			exact: "echo --flag --flag2",
+		},
 	}
-	out, err := applyOptionsPlaceholders(cmd, opts)
-	assert.NoError(t, err)
-	assert.Contains(t, out, "--flag value")
-	assert.Contains(t, out, "--flag2=value")
-}
 
-func TestApplyOptionsPlaceholders_BoolTrue(t *testing.T) {
-	cmd := "echo ${--flag:opt} ${--flag2=opt}"
-	opts := types.FormattingOptions{
-		"opt": true,
-	}
-	out, err := applyOptionsPlaceholders(cmd, opts)
-	assert.NoError(t, err)
-	assert.Equal(t, "echo --flag --flag2", out)
-}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			out, err := applyOptionsPlaceholders(tt.cmd, tt.opts)
+			assert.NoError(t, err)
 
-func TestApplyOptionsPlaceholders_BoolFalse(t *testing.T) {
-	cmd := "echo ${--flag:!opt} ${--flag2=!opt}"
-	opts := types.FormattingOptions{
-		"opt": false,
+			if tt.exact != "" {
+				assert.Equal(t, tt.exact, out)
+			} else {
+				for _, exp := range tt.expected {
+					assert.Contains(t, out, exp)
+				}
+			}
+		})
 	}
-	out, err := applyOptionsPlaceholders(cmd, opts)
-	assert.NoError(t, err)
-	assert.Equal(t, "echo --flag --flag2", out)
 }
 
 func TestApplyRangePlaceholders(t *testing.T) {
@@ -62,7 +81,7 @@ func TestApplyRangePlaceholders(t *testing.T) {
 	assert.Contains(t, out, "--flag=4")
 }
 
-func TestBuildCommand_HandlesPlaceholders(t *testing.T) {
+func TestBuildCommandHandlesPlaceholders(t *testing.T) {
 	command := "echo ${flag:opt} ${anotherflag:tpo}"
 	opts := types.FormattingOptions{"opt": "value"}
 
@@ -75,7 +94,7 @@ func TestBuildCommand_HandlesPlaceholders(t *testing.T) {
 	assert.NotContains(t, cmdStr, "file.txt")
 }
 
-func TestFormatDocument_WithStdin(t *testing.T) {
+func TestFormatDocumentWithStdin(t *testing.T) {
 	cfg := types.Language{FormatCommand: "cat -"}
 	tmpDir := t.TempDir()
 
@@ -85,7 +104,7 @@ func TestFormatDocument_WithStdin(t *testing.T) {
 	assert.Equal(t, "hello text", strings.TrimSpace(out))
 }
 
-func TestRunFormatters_Success(t *testing.T) {
+func TestRunFormattersSuccess(t *testing.T) {
 	tmpDir := t.TempDir()
 	testfile := filepath.Join(tmpDir, "text.txt")
 	err := os.WriteFile(testfile, []byte("test"), 0755)
@@ -99,12 +118,12 @@ func TestRunFormatters_Success(t *testing.T) {
 			"go": {{FormatCommand: "cat", RequireMarker: false}},
 		},
 	}
-	edits, err := runAllFormatters(t, h, types.DocumentURI("file://"+testfile))
+	edits, err := h.runAllFormatters(t, types.DocumentURI("file://"+testfile))
 	assert.NoError(t, err)
 	assert.NotNil(t, edits)
 }
 
-func TestRunFormatters_UsesPreviousText(t *testing.T) {
+func TestRunFormattersUsesPreviousText(t *testing.T) {
 	tmpDir := t.TempDir()
 	testfile := filepath.Join(tmpDir, "text.txt")
 	err := os.WriteFile(testfile, []byte("test"), 0755)
@@ -130,22 +149,22 @@ func TestRunFormatters_UsesPreviousText(t *testing.T) {
 			},
 		},
 	}
-	edits, err := runAllFormatters(t, h, types.DocumentURI("file://"+testfile))
+	edits, err := h.runAllFormatters(t, types.DocumentURI("file://"+testfile))
 	assert.NoError(t, err)
 	assert.Equal(t, "helloconfig1config2\n", edits[0].NewText)
 }
 
-func TestRunFormatters_RequireRootMatcher(t *testing.T) {
+func TestRunFormattersRequireRootMatcher(t *testing.T) {
 	base, _ := os.Getwd()
-	filepath := filepath.Join(base, "foo")
-	uri := ParseLocalFileToURI(filepath)
+	filePath := filepath.Join(base, "foo")
+	uri := ParseLocalFileToURI(filePath)
 
 	h := &LangHandler{
 		RootPath: base,
 		configs: map[string][]types.Language{
 			"vim": {
 				{
-					FormatCommand: `echo ` + filepath + `:2:No it is normal!`,
+					FormatCommand: `echo ` + filePath + `:2:No it is normal!`,
 					RequireMarker: true,
 					RootMarkers:   []string{".vimfmtrc"},
 				},
@@ -159,12 +178,12 @@ func TestRunFormatters_RequireRootMatcher(t *testing.T) {
 		},
 	}
 
-	edits, err := runAllFormatters(t, h, uri)
+	edits, err := h.runAllFormatters(t, uri)
 	assert.NoError(t, err)
 	assert.Empty(t, edits)
 }
 
-func runAllFormatters(t *testing.T, h *LangHandler, uri types.DocumentURI) ([]types.TextEdit, error) {
+func (h *LangHandler) runAllFormatters(t *testing.T, uri types.DocumentURI) ([]types.TextEdit, error) {
 	progress := blackHoleProgress()
 	defer close(progress)
 	return h.RunAllFormatters(t.Context(), uri, nil, types.FormattingOptions{}, progress)

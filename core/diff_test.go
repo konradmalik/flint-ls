@@ -272,7 +272,7 @@ func TestComputeEdits(t *testing.T) {
 	}
 }
 
-func TestComputeEdits_LargeInput(t *testing.T) {
+func TestComputeEditsLargeInput(t *testing.T) {
 	before := ""
 	after := ""
 
@@ -295,7 +295,7 @@ func TestComputeEdits_LargeInput(t *testing.T) {
 	assert.Equal(t, after, afterApplied)
 }
 
-func TestComputeEdits_ComplexScenario(t *testing.T) {
+func TestComputeEditsComplexScenario(t *testing.T) {
 	before := `package main
 
 import "fmt"

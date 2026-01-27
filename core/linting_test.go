@@ -14,28 +14,41 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
-func TestLintNoLinter(t *testing.T) {
-	h := &LangHandler{
-		configs: map[string][]types.Language{},
-		files: map[types.DocumentURI]*fileRef{
-			types.DocumentURI("file:///foo"): {},
+func TestLintErrorCases(t *testing.T) {
+	tests := []struct {
+		name      string
+		uri       types.DocumentURI
+		expectErr bool
+	}{
+		{
+			name:      "no linter configured",
+			uri:       "file:///foo",
+			expectErr: false,
+		},
+		{
+			name:      "no such document",
+			uri:       "file:///bar",
+			expectErr: true,
 		},
 	}
 
-	_, err := h.getAllDiagnosticsForUri(t, "file:///foo")
-	assert.NoError(t, err)
-}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			h := &LangHandler{
+				configs: map[string][]types.Language{},
+				files: map[types.DocumentURI]*fileRef{
+					types.DocumentURI("file:///foo"): {},
+				},
+			}
 
-func TestLintNoSuchDocument(t *testing.T) {
-	h := &LangHandler{
-		configs: map[string][]types.Language{},
-		files: map[types.DocumentURI]*fileRef{
-			types.DocumentURI("file:///foo"): {},
-		},
+			_, err := h.getAllDiagnosticsForUri(t, tt.uri)
+			if tt.expectErr {
+				assert.Error(t, err)
+			} else {
+				assert.NoError(t, err)
+			}
+		})
 	}
-
-	_, err := h.getAllDiagnosticsForUri(t, "file:///bar")
-	assert.Error(t, err)
 }
 
 func TestLinting(t *testing.T) {
@@ -196,112 +209,73 @@ func TestLintFileMatchedWildcard(t *testing.T) {
 
 // column 0 remains unchanged, regardless of the configured offset
 // column 0 indicates a whole line (although for 0-based column linters we can not distinguish between word starting at 0 and the whole line)
-func TestLintOffsetColumnsZero(t *testing.T) {
+func TestLintOffsetColumns(t *testing.T) {
 	base, _ := os.Getwd()
 	file := filepath.Join(base, "foo")
 	uri := ParseLocalFileToURI(file)
 
-	h := &LangHandler{
-		RootPath: base,
-		configs: map[string][]types.Language{
-			types.Wildcard: {
-				{
-					LintCommand:        `echo ` + file + `:2:0:msg`,
-					LintFormats:        []string{"%f:%l:%c:%m"},
-					LintIgnoreExitCode: true,
-					LintStdin:          true,
-					LintOffsetColumns:  1,
-				},
-			},
+	tests := []struct {
+		name              string
+		lintOffsetColumns int
+		inputColumn       string
+		expectedCharacter int
+		description       string
+	}{
+		{
+			name:              "zero column remains unchanged",
+			lintOffsetColumns: 1,
+			inputColumn:       "0",
+			expectedCharacter: 0,
+			description:       "column 0 remains unchanged, regardless of the configured offset",
 		},
-		files: map[types.DocumentURI]*fileRef{
-			uri: {
-				LanguageID:         "vim",
-				Text:               "scriptencoding utf-8\nabnormal!\n",
-				NormalizedFilename: file,
-				Uri:                uri,
-			},
+		{
+			name:              "no offset assumes 1-based",
+			lintOffsetColumns: 0,
+			inputColumn:       "1",
+			expectedCharacter: 0,
+			description:       "without column offset, 1-based columns are assumed, which means that we should get 0 for column 1 as LSP assumes 0-based columns",
 		},
-	}
-
-	d, err := h.getAllDiagnosticsForUri(t, uri)
-	assert.NoError(t, err)
-
-	assert.Len(t, d, 1)
-	assert.Equal(t, d[0].Range.Start.Character, 0)
-}
-
-// without column offset, 1-based columns are assumed, which means that we should get 0 for column 1
-// as LSP assumes 0-based columns
-func TestLintOffsetColumnsNoOffset(t *testing.T) {
-	base, _ := os.Getwd()
-	file := filepath.Join(base, "foo")
-	uri := ParseLocalFileToURI(file)
-
-	h := &LangHandler{
-		RootPath: base,
-		configs: map[string][]types.Language{
-			types.Wildcard: {
-				{
-					LintCommand:        `echo ` + file + `:2:1:msg`,
-					LintFormats:        []string{"%f:%l:%c:%m"},
-					LintIgnoreExitCode: true,
-					LintStdin:          true,
-				},
-			},
-		},
-		files: map[types.DocumentURI]*fileRef{
-			uri: {
-				LanguageID:         "vim",
-				Text:               "scriptencoding utf-8\nabnormal!\n",
-				NormalizedFilename: file,
-				Uri:                uri,
-			},
+		{
+			name:              "with offset preserves column",
+			lintOffsetColumns: 1,
+			inputColumn:       "1",
+			expectedCharacter: 1,
+			description:       "for column 1 with offset we should get column 1 back - without the offset efm would subtract 1 as it expects 1 based columns",
 		},
 	}
 
-	d, err := h.getAllDiagnosticsForUri(t, uri)
-	assert.NoError(t, err)
-
-	assert.Len(t, d, 1)
-	assert.Equal(t, d[0].Range.Start.Character, 0)
-}
-
-// for column 1 with offset we should get column 1 back
-// without the offset efm would subtract 1 as it expects 1 based columns
-func TestLintOffsetColumnsNonZero(t *testing.T) {
-	base, _ := os.Getwd()
-	file := filepath.Join(base, "foo")
-	uri := ParseLocalFileToURI(file)
-
-	h := &LangHandler{
-		RootPath: base,
-		configs: map[string][]types.Language{
-			types.Wildcard: {
-				{
-					LintCommand:        `echo ` + file + `:2:1:msg`,
-					LintFormats:        []string{"%f:%l:%c:%m"},
-					LintIgnoreExitCode: true,
-					LintStdin:          true,
-					LintOffsetColumns:  1,
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			h := &LangHandler{
+				RootPath: base,
+				configs: map[string][]types.Language{
+					types.Wildcard: {
+						{
+							LintCommand:        `echo ` + file + `:2:` + tt.inputColumn + `:msg`,
+							LintFormats:        []string{"%f:%l:%c:%m"},
+							LintIgnoreExitCode: true,
+							LintStdin:          true,
+							LintOffsetColumns:  tt.lintOffsetColumns,
+						},
+					},
 				},
-			},
-		},
-		files: map[types.DocumentURI]*fileRef{
-			uri: {
-				LanguageID:         "vim",
-				Text:               "scriptencoding utf-8\nabnormal!\n",
-				NormalizedFilename: file,
-				Uri:                uri,
-			},
-		},
+				files: map[types.DocumentURI]*fileRef{
+					uri: {
+						LanguageID:         "vim",
+						Text:               "scriptencoding utf-8\nabnormal!\n",
+						NormalizedFilename: file,
+						Uri:                uri,
+					},
+				},
+			}
+
+			d, err := h.getAllDiagnosticsForUri(t, uri)
+			assert.NoError(t, err)
+
+			assert.Len(t, d, 1)
+			assert.Equal(t, tt.expectedCharacter, d[0].Range.Start.Character)
+		})
 	}
-
-	d, err := h.getAllDiagnosticsForUri(t, uri)
-	assert.NoError(t, err)
-
-	assert.Len(t, d, 1)
-	assert.Equal(t, d[0].Range.Start.Character, 1)
 }
 
 func TestLintCategoryMap(t *testing.T) {

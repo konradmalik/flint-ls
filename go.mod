@@ -3,7 +3,7 @@ module github.com/konradmalik/flint-ls
 go 1.25
 
 require (
-	github.com/aymanbagabas/go-udiff v0.3.1
+	github.com/aymanbagabas/go-udiff v0.4.0
 	github.com/google/uuid v1.6.0
 	github.com/reviewdog/errorformat v0.0.0-20250320004447-223c26dbe212
 	github.com/sourcegraph/jsonrpc2 v0.2.1

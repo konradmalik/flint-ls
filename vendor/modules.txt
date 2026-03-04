@@ -8,8 +8,8 @@ github.com/Songmu/goxz/cmd/goxz
 # github.com/Songmu/retry v0.1.0
 ## explicit
 github.com/Songmu/retry
-# github.com/aymanbagabas/go-udiff v0.3.1
-## explicit; go 1.23
+# github.com/aymanbagabas/go-udiff v0.4.0
+## explicit; go 1.24
 github.com/aymanbagabas/go-udiff
 github.com/aymanbagabas/go-udiff/lcs
 # github.com/chzyer/readline v1.5.1

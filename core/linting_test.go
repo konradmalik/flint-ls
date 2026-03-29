@@ -545,9 +545,9 @@ func TestLintEventTypes(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			h.configs["vim"][0].LintAfterOpen = boolPtr(tt.lintAfterOpen)
-			h.configs["vim"][0].LintOnChange = boolPtr(tt.lintOnChange)
-			h.configs["vim"][0].LintOnSave = boolPtr(tt.lintOnSave)
+			h.configs["vim"][0].LintAfterOpen = new(tt.lintAfterOpen)
+			h.configs["vim"][0].LintOnChange = new(tt.lintOnChange)
+			h.configs["vim"][0].LintOnSave = new(tt.lintOnSave)
 			d, err := h.getAllDiagnosticsForUriWithEvent(t, uri, tt.event)
 			assert.NoError(t, err)
 			assert.Equal(t, tt.expectMessages, len(d))

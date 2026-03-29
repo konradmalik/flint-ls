@@ -1,6 +1,8 @@
 package core
 
 import (
+	"strings"
+
 	"github.com/aymanbagabas/go-udiff"
 	"github.com/konradmalik/flint-ls/types"
 )
@@ -16,17 +18,17 @@ func ComputeEdits(name types.DocumentURI, before, after string) ([]types.TextEdi
 	for _, h := range d.Hunks {
 		startLine := h.FromLine - 1
 		endLine := startLine
-		var newText string
+		var newText strings.Builder
 
 		for _, l := range h.Lines {
 			switch l.Kind {
 			case udiff.Equal:
-				newText += l.Content
+				newText.WriteString(l.Content)
 				endLine++
 			case udiff.Delete:
 				endLine++
 			case udiff.Insert:
-				newText += l.Content
+				newText.WriteString(l.Content)
 			}
 		}
 
@@ -35,7 +37,7 @@ func ComputeEdits(name types.DocumentURI, before, after string) ([]types.TextEdi
 				Start: types.Position{Line: startLine, Character: 0},
 				End:   types.Position{Line: endLine, Character: 0},
 			},
-			NewText: newText,
+			NewText: newText.String(),
 		})
 	}
 

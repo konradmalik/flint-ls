@@ -273,25 +273,25 @@ func TestComputeEdits(t *testing.T) {
 }
 
 func TestComputeEditsLargeInput(t *testing.T) {
-	before := ""
+	var before strings.Builder
 	after := ""
 
 	// Create 1000 lines
 	for i := range 1000 {
 		if i%2 == 0 {
-			before += "line" + string(rune('0'+i%10)) + "\n"
+			before.WriteString("line" + string(rune('0'+i%10)) + "\n")
 			after += "line" + string(rune('0'+i%10)) + "\n"
 		} else {
-			before += "old" + string(rune('0'+i%10)) + "\n"
+			before.WriteString("old" + string(rune('0'+i%10)) + "\n")
 			after += "new" + string(rune('0'+i%10)) + "\n"
 		}
 	}
 
 	uri := types.DocumentURI("file:///large.txt")
-	edits, err := ComputeEdits(uri, before, after)
+	edits, err := ComputeEdits(uri, before.String(), after)
 	assert.NoError(t, err)
 
-	afterApplied := applyEdits(before, edits)
+	afterApplied := applyEdits(before.String(), edits)
 	assert.Equal(t, after, afterApplied)
 }
 

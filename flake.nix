@@ -33,7 +33,7 @@
           default = pkgs.mkShell {
             name = "flint";
             packages = with pkgs; [
-              nodePackages.prettier
+              prettier
             ];
             inputsFrom = [ self.packages.${system}.default ];
           };

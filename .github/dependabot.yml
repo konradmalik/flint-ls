@@ -4,11 +4,15 @@ updates:
     directory: "/"
     schedule:
       interval: weekly
+    assignees:
+      - "konradmalik"
 
   - package-ecosystem: gomod
     directory: "/"
     schedule:
       interval: weekly
+    assignees:
+      - "konradmalik"
 
   - package-ecosystem: "nix"
     directory: "/"
@@ -21,3 +25,5 @@ updates:
       flake:
         patterns:
           - "*"
+    assignees:
+      - "konradmalik"

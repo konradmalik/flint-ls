@@ -274,25 +274,25 @@ func TestComputeEdits(t *testing.T) {
 
 func TestComputeEditsLargeInput(t *testing.T) {
 	var before strings.Builder
-	after := ""
+	var after strings.Builder
 
 	// Create 1000 lines
 	for i := range 1000 {
 		if i%2 == 0 {
 			before.WriteString("line" + string(rune('0'+i%10)) + "\n")
-			after += "line" + string(rune('0'+i%10)) + "\n"
+			after.WriteString("line" + string(rune('0'+i%10)) + "\n")
 		} else {
 			before.WriteString("old" + string(rune('0'+i%10)) + "\n")
-			after += "new" + string(rune('0'+i%10)) + "\n"
+			after.WriteString("new" + string(rune('0'+i%10)) + "\n")
 		}
 	}
 
 	uri := types.DocumentURI("file:///large.txt")
-	edits, err := ComputeEdits(uri, before.String(), after)
+	edits, err := ComputeEdits(uri, before.String(), after.String())
 	assert.NoError(t, err)
 
 	afterApplied := applyEdits(before.String(), edits)
-	assert.Equal(t, after, afterApplied)
+	assert.Equal(t, after.String(), afterApplied)
 }
 
 func TestComputeEditsComplexScenario(t *testing.T) {

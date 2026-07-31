@@ -130,9 +130,10 @@ Example
 
 ```go
 type Config struct {
-	Languages      *map[string][]Language `json:"languages,omitempty"`
-	LintDebounce   time.Duration          `json:"lintDebounce,omitempty"`
-	FormatDebounce time.Duration          `json:"formatDebounce,omitempty"`
+	Languages *map[string][]Language `json:"languages,omitempty"`
+	// how long a document must be idle before it is linted, in nanoseconds.
+	// defaults to 100ms; debouncing is per document
+	LintDebounce time.Duration `json:"lintDebounce,omitempty"`
 }
 
 type Language struct {

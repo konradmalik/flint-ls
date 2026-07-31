@@ -1,6 +1,7 @@
 package core
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -9,6 +10,7 @@ import (
 
 	"github.com/konradmalik/flint-ls/types"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestNormalizedFilenameFromURI(t *testing.T) {
@@ -160,7 +162,7 @@ func TestRunFormattersRequireRootMatcher(t *testing.T) {
 	uri := ParseLocalFileToURI(filePath)
 
 	h := &LangHandler{
-		RootPath: base,
+		rootPath: base,
 		configs: map[string][]types.Language{
 			"vim": {
 				{
@@ -183,8 +185,33 @@ func TestRunFormattersRequireRootMatcher(t *testing.T) {
 	assert.Empty(t, edits)
 }
 
+func TestRunFormattersEndsProgressWhenEveryFormatterFails(t *testing.T) {
+	testfile := filepath.Join(t.TempDir(), "text.txt")
+	uri := ParseLocalFileToURI(testfile)
+
+	h := &LangHandler{
+		files: map[types.DocumentURI]*fileRef{
+			uri: {Text: "hello", LanguageID: "go", NormalizedFilename: testfile},
+		},
+		configs: map[string][]types.Language{
+			"go": {{FormatCommand: "exit 1"}},
+		},
+	}
+
+	reporter := &recordingReporter{}
+	_, err := h.RunAllFormatters(t.Context(), reporter, uri, nil, types.FormattingOptions{})
+	require.Error(t, err)
+
+	// a failed run must still close its progress token, or the client is left
+	// showing a spinner forever
+	events := reporter.progressEvents()
+	require.Len(t, events, 2)
+	last, err := json.Marshal(events[1].Value)
+	require.NoError(t, err)
+	assert.Contains(t, string(last), `"kind":"end"`)
+	assert.Equal(t, events[0].Token, events[1].Token)
+}
+
 func (h *LangHandler) runAllFormatters(t *testing.T, uri types.DocumentURI) ([]types.TextEdit, error) {
-	progress := blackHoleProgress()
-	defer close(progress)
-	return h.RunAllFormatters(t.Context(), uri, nil, types.FormattingOptions{}, progress)
+	return h.RunAllFormatters(t.Context(), &recordingReporter{}, uri, nil, types.FormattingOptions{})
 }

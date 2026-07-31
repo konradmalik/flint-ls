@@ -17,60 +17,61 @@ import (
 var unknownExitCode = -999
 var defaultLintFormats = []string{"%f:%l:%m", "%f:%l:%c:%m"}
 
-func (h *LangHandler) RunAllLinters(
-	ctx context.Context, uri types.DocumentURI, eventType types.EventType,
-	diagnosticsOut chan<- types.PublishDiagnosticsParams,
-	errorsOut chan<- error,
-	progress chan<- types.ProgressParams) error {
-	f, ok := h.files[uri]
-	if !ok {
-		return fmt.Errorf("document not found: %v", uri)
+// RunAllLinters lints uri with every configured linter that applies to
+// eventType, reporting diagnostics as each linter finishes. It blocks until all
+// linters are done or ctx is cancelled.
+func (h *LangHandler) RunAllLinters(ctx context.Context, reporter Reporter, uri types.DocumentURI, eventType types.EventType) error {
+	snap, err := h.snapshot(uri)
+	if err != nil {
+		return err
 	}
+	f := snap.file
 
-	configs := getLintConfigsForDocument(f.NormalizedFilename, f.LanguageID, h.configs, eventType)
+	configs := getLintConfigsForDocument(f.NormalizedFilename, f.LanguageID, snap.configs, eventType)
 	if len(configs) == 0 {
 		logs.Log.Logf(logs.Debug, "no matching lint configs for LanguageID: %v", f.LanguageID)
 		return nil
 	}
 
 	// to reset existing
-	diagnosticsOut <- types.PublishDiagnosticsParams{
+	reporter.PublishDiagnostics(ctx, types.PublishDiagnosticsParams{
 		URI:         uri,
 		Diagnostics: make([]types.Diagnostic, 0),
 		Version:     f.Version,
-	}
+	})
 
 	progressToken := types.NewProgressToken()
-	progress <- types.ProgressParams{
+	reporter.Progress(ctx, types.ProgressParams{
 		Token: progressToken,
 		Value: types.NewWorkDoneProgressBegin("Linting document", nil, nil),
-	}
+	})
+	// deferred so that an early return can never leave the client with a
+	// progress token that is begun but never ended
+	defer reporter.Progress(ctx, types.ProgressParams{
+		Token: progressToken,
+		Value: types.NewWorkDoneProgressEnd(nil),
+	})
 
 	var wg sync.WaitGroup
 	for _, config := range configs {
 		wg.Go(func() {
-			rootPath := h.findRootPath(f.NormalizedFilename, config)
-			diagnostics, err := lintDocument(ctx, rootPath, *f, config)
+			rootPath := findRootPath(f.NormalizedFilename, config.RootMarkers, snap.rootPath)
+			diagnostics, err := lintDocument(ctx, rootPath, f, config)
 			if err != nil {
 				logs.Log.Logln(logs.Error, err.Error())
-				errorsOut <- err
+				reporter.ReportError(ctx, err)
 				return
 			}
 
-			diagnosticsOut <- types.PublishDiagnosticsParams{
+			reporter.PublishDiagnostics(ctx, types.PublishDiagnosticsParams{
 				URI:         uri,
 				Diagnostics: diagnostics,
 				Version:     f.Version,
-			}
+			})
 		})
 	}
 
 	wg.Wait()
-
-	progress <- types.ProgressParams{
-		Token: progressToken,
-		Value: types.NewWorkDoneProgressEnd(nil),
-	}
 
 	return nil
 }

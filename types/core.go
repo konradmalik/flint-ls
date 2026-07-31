@@ -5,9 +5,9 @@ import "time"
 const Wildcard = "="
 
 type Config struct {
-	Languages      *map[string][]Language `json:"languages,omitempty"`
-	LintDebounce   time.Duration          `json:"lintDebounce,omitempty"`
-	FormatDebounce time.Duration          `json:"formatDebounce,omitempty"`
+	Languages *map[string][]Language `json:"languages,omitempty"`
+	// how long a document must be idle before it is linted
+	LintDebounce time.Duration `json:"lintDebounce,omitempty"`
 }
 
 type Language struct {

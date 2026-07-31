@@ -1,10 +1,12 @@
 package core
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -117,7 +119,7 @@ func TestLinting(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			h := &LangHandler{
-				RootPath: base,
+				rootPath: base,
 				configs: map[string][]types.Language{
 					"vim": {tt.langConfig},
 				},
@@ -143,7 +145,7 @@ func TestDiagnosticsResetOnEachRun(t *testing.T) {
 	uri := ParseLocalFileToURI(file)
 
 	h := &LangHandler{
-		RootPath: base,
+		rootPath: base,
 		configs: map[string][]types.Language{
 			"vim": {
 				{
@@ -177,7 +179,7 @@ func TestLintFileMatchedWildcard(t *testing.T) {
 	uri := ParseLocalFileToURI(file)
 
 	h := &LangHandler{
-		RootPath: base,
+		rootPath: base,
 		configs: map[string][]types.Language{
 			types.Wildcard: {
 				{
@@ -247,7 +249,7 @@ func TestLintOffsetColumns(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			h := &LangHandler{
-				RootPath: base,
+				rootPath: base,
 				configs: map[string][]types.Language{
 					types.Wildcard: {
 						{
@@ -289,7 +291,7 @@ func TestLintCategoryMap(t *testing.T) {
 	formats := []string{"%f:%l:%c:%t:%m"}
 
 	h := &LangHandler{
-		RootPath: base,
+		rootPath: base,
 		configs: map[string][]types.Language{
 			types.Wildcard: {
 				{
@@ -325,7 +327,7 @@ func TestLintRequireRootMarker(t *testing.T) {
 	uri := ParseLocalFileToURI(file)
 
 	h := &LangHandler{
-		RootPath: base,
+		rootPath: base,
 		configs: map[string][]types.Language{
 			"vim": {
 				{
@@ -361,7 +363,7 @@ func TestLintSingleEntry(t *testing.T) {
 	uri2 := ParseLocalFileToURI(file2)
 
 	h := &LangHandler{
-		RootPath: base,
+		rootPath: base,
 		configs: map[string][]types.Language{
 			"vim": {
 				{
@@ -403,7 +405,7 @@ func TestLintMultipleEntries(t *testing.T) {
 	uri2 := ParseLocalFileToURI(file2)
 
 	h := &LangHandler{
-		RootPath: base,
+		rootPath: base,
 		configs: map[string][]types.Language{
 			"vim": {
 				{
@@ -445,7 +447,7 @@ func TestLintNoDiagnostics(t *testing.T) {
 	uri := ParseLocalFileToURI(file)
 
 	h := &LangHandler{
-		RootPath: base,
+		rootPath: base,
 		configs: map[string][]types.Language{
 			"vim": {
 				{
@@ -477,7 +479,7 @@ func TestLintEventTypes(t *testing.T) {
 	uri := ParseLocalFileToURI(file)
 
 	h := &LangHandler{
-		RootPath: base,
+		rootPath: base,
 		configs: map[string][]types.Language{
 			"vim": {
 				{
@@ -870,40 +872,66 @@ func (h *LangHandler) getAllDiagnosticsForUriWithEvent(t *testing.T, uri types.D
 }
 
 func (h *LangHandler) getAllPublishDiagnosticsParamsForUriWithEvent(t *testing.T, uri types.DocumentURI, event types.EventType) ([]types.PublishDiagnosticsParams, error) {
-	var wg sync.WaitGroup
+	reporter := &recordingReporter{}
 
-	diagnosticsOut := make([]types.PublishDiagnosticsParams, 0)
-	errorsOut := make([]string, 0)
+	runErr := h.RunAllLinters(t.Context(), reporter, uri, event)
 
-	func() {
-		diagnosticsChan := make(chan types.PublishDiagnosticsParams)
-		errorsChan := make(chan error)
-		progressChan := blackHoleProgress()
-		defer close(diagnosticsChan)
-		defer close(errorsChan)
-		defer close(progressChan)
-
-		wg.Go(func() {
-			for e := range errorsChan {
-				errorsOut = append(errorsOut, e.Error())
-			}
-		})
-
-		wg.Go(func() {
-			for d := range diagnosticsChan {
-				diagnosticsOut = append(diagnosticsOut, d)
-			}
-		})
-
-		err := h.RunAllLinters(t.Context(), uri, event, diagnosticsChan, errorsChan, progressChan)
-		if err != nil {
-			errorsOut = append(errorsOut, err.Error())
-		}
-	}()
-
-	wg.Wait()
-	if len(errorsOut) != 0 {
-		return nil, fmt.Errorf("%s", strings.Join(errorsOut, ";"))
+	errs := reporter.errorMessages()
+	if runErr != nil {
+		errs = append(errs, runErr.Error())
 	}
-	return diagnosticsOut, nil
+
+	if len(errs) != 0 {
+		return nil, fmt.Errorf("%s", strings.Join(errs, ";"))
+	}
+	return reporter.publishedDiagnostics(), nil
+}
+
+// recordingReporter is a core.Reporter that accumulates everything reported to
+// it. Linters report from several goroutines at once, so it locks.
+type recordingReporter struct {
+	mu          sync.Mutex
+	diagnostics []types.PublishDiagnosticsParams
+	progress    []types.ProgressParams
+	errors      []error
+}
+
+func (r *recordingReporter) PublishDiagnostics(_ context.Context, params types.PublishDiagnosticsParams) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.diagnostics = append(r.diagnostics, params)
+}
+
+func (r *recordingReporter) Progress(_ context.Context, params types.ProgressParams) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.progress = append(r.progress, params)
+}
+
+func (r *recordingReporter) ReportError(_ context.Context, err error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.errors = append(r.errors, err)
+}
+
+func (r *recordingReporter) publishedDiagnostics() []types.PublishDiagnosticsParams {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return slices.Clone(r.diagnostics)
+}
+
+func (r *recordingReporter) progressEvents() []types.ProgressParams {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return slices.Clone(r.progress)
+}
+
+func (r *recordingReporter) errorMessages() []string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	messages := make([]string, 0, len(r.errors))
+	for _, err := range r.errors {
+		messages = append(messages, err.Error())
+	}
+	return messages
 }

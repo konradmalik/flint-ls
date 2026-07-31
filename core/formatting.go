@@ -20,15 +20,19 @@ var (
 	reEquals = regexp.MustCompile(`\$\{([^=}]+)=([^}]+)\}`)
 )
 
+// RunAllFormatters runs every configured formatter for uri in sequence, each
+// one fed the previous one's output, and returns the edits that turn the
+// document into the final result.
 func (h *LangHandler) RunAllFormatters(
-	ctx context.Context, uri types.DocumentURI, rng *types.Range, options types.FormattingOptions,
-	progress chan<- types.ProgressParams) ([]types.TextEdit, error) {
-	f, ok := h.files[uri]
-	if !ok {
-		return nil, fmt.Errorf("document not found: %v", uri)
+	ctx context.Context, reporter Reporter, uri types.DocumentURI, rng *types.Range,
+	options types.FormattingOptions) ([]types.TextEdit, error) {
+	snap, err := h.snapshot(uri)
+	if err != nil {
+		return nil, err
 	}
+	f := snap.file
 
-	configs, err := getFormatConfigsForDocument(f.NormalizedFilename, f.LanguageID, h.configs)
+	configs, err := getFormatConfigsForDocument(f.NormalizedFilename, f.LanguageID, snap.configs)
 	if err != nil {
 		return nil, err
 	}
@@ -38,10 +42,16 @@ func (h *LangHandler) RunAllFormatters(
 	}
 
 	progressToken := types.NewProgressToken()
-	progress <- types.ProgressParams{
+	reporter.Progress(ctx, types.ProgressParams{
 		Token: progressToken,
 		Value: types.NewWorkDoneProgressBegin("Formatting document", nil, nil),
-	}
+	})
+	// deferred so that an early return can never leave the client with a
+	// progress token that is begun but never ended
+	defer reporter.Progress(ctx, types.ProgressParams{
+		Token: progressToken,
+		Value: types.NewWorkDoneProgressEnd(nil),
+	})
 
 	originalText := f.Text
 	formattedText := originalText
@@ -49,7 +59,7 @@ func (h *LangHandler) RunAllFormatters(
 
 	errors := make([]string, 0)
 	for _, config := range configs {
-		rootPath := h.findRootPath(f.NormalizedFilename, config)
+		rootPath := findRootPath(f.NormalizedFilename, config.RootMarkers, snap.rootPath)
 		newText, err := formatDocument(ctx, rootPath, f.NormalizedFilename, formattedText, rng, options, config)
 
 		if err != nil {
@@ -66,12 +76,16 @@ func (h *LangHandler) RunAllFormatters(
 		return nil, fmt.Errorf("could not format for LanguageID: %s. All errors: %v", f.LanguageID, errors)
 	}
 
-	logs.Log.Logln(logs.Info, "format succeeded")
-
-	progress <- types.ProgressParams{
-		Token: progressToken,
-		Value: types.NewWorkDoneProgressEnd(nil),
+	// the edits below are a diff against the text the formatters started from, so
+	// they only apply cleanly to a document that has not moved since. a client
+	// that formats synchronously blocks input and cannot get here; one that
+	// formats asynchronously can, and applying a stale diff there would corrupt
+	// the document. a version comparison is cheap enough to do regardless.
+	if err := h.ensureUnchanged(uri, f.Version); err != nil {
+		return nil, err
 	}
+
+	logs.Log.Logln(logs.Info, "format succeeded")
 
 	return ComputeEdits(uri, originalText, formattedText)
 }

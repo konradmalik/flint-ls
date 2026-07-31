@@ -47,22 +47,21 @@ func main() {
 	logs.InitializeLogger(logfile, logs.LogLevel(max(loglevel, -1)))
 	logs.Log.Logln(logs.Info, "reading on stdin, writing on stdout")
 
-	var f *os.File
-	defer func() {
-		if f != nil {
-			_ = f.Close()
-		}
-	}()
-
 	internalHandler := core.NewHandler(config)
 	handler := lsp.NewHandler(internalHandler)
+
 	<-jsonrpc2.NewConn(
 		context.Background(),
 		jsonrpc2.NewBufferedStream(stdrwc{}, jsonrpc2.VSCodeObjectCodec{}),
-		jsonrpc2.HandlerWithError(handler.Handle),
+		lsp.OffloadSlowRequests(jsonrpc2.HandlerWithError(handler.Handle)),
 		jsonrpc2.LogMessages(logs.Log)).DisconnectNotify()
 
 	logs.Log.Logln(logs.Info, "flint-ls: connections closed")
+
+	// the client is gone: abandon anything still scheduled instead of letting
+	// pending linters run against a dead connection
+	handler.Close()
+	os.Exit(handler.ExitCode())
 }
 
 type stdrwc struct{}

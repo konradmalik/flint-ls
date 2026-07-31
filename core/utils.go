@@ -64,13 +64,3 @@ func boolOrDefault(b *bool, def bool) bool {
 	}
 	return *b
 }
-
-func blackHoleProgress() chan types.ProgressParams {
-	ch := make(chan types.ProgressParams)
-	go func() {
-		for range ch {
-			// discard values
-		}
-	}()
-	return ch
-}

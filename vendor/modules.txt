@@ -72,6 +72,7 @@ github.com/spf13/pflag
 ## explicit; go 1.17
 github.com/stretchr/testify/assert
 github.com/stretchr/testify/assert/yaml
+github.com/stretchr/testify/require
 # github.com/tcnksm/ghr v0.17.0
 ## explicit; go 1.23
 github.com/tcnksm/ghr

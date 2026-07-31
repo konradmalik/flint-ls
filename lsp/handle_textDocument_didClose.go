@@ -2,24 +2,25 @@ package lsp
 
 import (
 	"context"
-	"encoding/json"
+
+	"github.com/sourcegraph/jsonrpc2"
 
 	"github.com/konradmalik/flint-ls/types"
-	"github.com/sourcegraph/jsonrpc2"
 )
 
-func (h *LspHandler) HandleTextDocumentDidClose(_ context.Context, _ *jsonrpc2.Conn, req *jsonrpc2.Request) (result any, err error) {
-	if req.Params == nil {
-		return nil, &jsonrpc2.Error{Code: jsonrpc2.CodeInvalidParams}
-	}
-
-	var params types.DidCloseTextDocumentParams
-	if err := json.Unmarshal(*req.Params, &params); err != nil {
+func (h *LspHandler) HandleTextDocumentDidClose(_ context.Context, _ *jsonrpc2.Conn, req *jsonrpc2.Request) (any, error) {
+	params, err := decodeParams[types.DidCloseTextDocumentParams](req)
+	if err != nil {
 		return nil, err
 	}
+
+	// drop scheduled work first: acting on a document that is no longer open
+	// would fail to find it anyway
+	h.ForgetDocument(params.TextDocument.URI)
 
 	if err := h.langHandler.CloseFile(params.TextDocument.URI); err != nil {
 		return nil, err
 	}
+
 	return nil, nil
 }

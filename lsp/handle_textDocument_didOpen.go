@@ -2,28 +2,24 @@ package lsp
 
 import (
 	"context"
-	"encoding/json"
+
+	"github.com/sourcegraph/jsonrpc2"
 
 	"github.com/konradmalik/flint-ls/types"
-	"github.com/sourcegraph/jsonrpc2"
 )
 
-func (h *LspHandler) HandleTextDocumentDidOpen(_ context.Context, conn *jsonrpc2.Conn, req *jsonrpc2.Request) (result any, err error) {
-	if req.Params == nil {
-		return nil, &jsonrpc2.Error{Code: jsonrpc2.CodeInvalidParams}
-	}
-
-	var params types.DidOpenTextDocumentParams
-	if err := json.Unmarshal(*req.Params, &params); err != nil {
+func (h *LspHandler) HandleTextDocumentDidOpen(_ context.Context, conn *jsonrpc2.Conn, req *jsonrpc2.Request) (any, error) {
+	params, err := decodeParams[types.DidOpenTextDocumentParams](req)
+	if err != nil {
 		return nil, err
 	}
 
-	if err := h.langHandler.OpenFile(params.TextDocument.URI, params.TextDocument.LanguageID, params.TextDocument.Version, params.TextDocument.Text); err != nil {
+	doc := params.TextDocument
+	if err := h.langHandler.OpenFile(doc.URI, doc.LanguageID, doc.Version, doc.Text); err != nil {
 		return nil, err
 	}
 
-	notifier := NewNotifier(conn)
-	h.ScheduleLinting(*notifier, params.TextDocument.URI, types.EventTypeOpen)
+	h.ScheduleLinting(NewNotifier(conn), doc.URI, types.EventTypeOpen)
 
 	return nil, nil
 }

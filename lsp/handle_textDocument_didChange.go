@@ -2,30 +2,28 @@ package lsp
 
 import (
 	"context"
-	"encoding/json"
+
+	"github.com/sourcegraph/jsonrpc2"
 
 	"github.com/konradmalik/flint-ls/types"
-	"github.com/sourcegraph/jsonrpc2"
 )
 
-func (h *LspHandler) HandleTextDocumentDidChange(_ context.Context, conn *jsonrpc2.Conn, req *jsonrpc2.Request) (result any, err error) {
-	if req.Params == nil {
-		return nil, &jsonrpc2.Error{Code: jsonrpc2.CodeInvalidParams}
-	}
-
-	var params types.DidChangeTextDocumentParams
-	if err := json.Unmarshal(*req.Params, &params); err != nil {
+func (h *LspHandler) HandleTextDocumentDidChange(_ context.Context, conn *jsonrpc2.Conn, req *jsonrpc2.Request) (any, error) {
+	params, err := decodeParams[types.DidChangeTextDocumentParams](req)
+	if err != nil {
 		return nil, err
 	}
 
-	for _, change := range params.ContentChanges {
-		if err := h.langHandler.UpdateFile(params.TextDocument.URI, change.Text, &params.TextDocument.Version); err != nil {
+	// the server announces full sync, so every change carries the whole
+	// document and only the last one matters
+	if n := len(params.ContentChanges); n > 0 {
+		text := params.ContentChanges[n-1].Text
+		if err := h.langHandler.UpdateFile(params.TextDocument.URI, text, &params.TextDocument.Version); err != nil {
 			return nil, err
 		}
 	}
 
-	notifier := NewNotifier(conn)
-	h.ScheduleLinting(*notifier, params.TextDocument.URI, types.EventTypeChange)
+	h.ScheduleLinting(NewNotifier(conn), params.TextDocument.URI, types.EventTypeChange)
 
 	return nil, nil
 }

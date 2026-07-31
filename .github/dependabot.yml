@@ -14,6 +14,13 @@ updates:
     assignees:
       - "konradmalik"
 
+  - package-ecosystem: gomod
+    directory: "/tools"
+    schedule:
+      interval: weekly
+    assignees:
+      - "konradmalik"
+
   - package-ecosystem: "nix"
     directory: "/"
     schedule:

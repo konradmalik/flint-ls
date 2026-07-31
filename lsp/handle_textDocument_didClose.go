@@ -17,10 +17,7 @@ func (h *LspHandler) HandleTextDocumentDidClose(_ context.Context, _ *jsonrpc2.C
 	// drop scheduled work first: acting on a document that is no longer open
 	// would fail to find it anyway
 	h.ForgetDocument(params.TextDocument.URI)
-
-	if err := h.langHandler.CloseFile(params.TextDocument.URI); err != nil {
-		return nil, err
-	}
+	h.langHandler.CloseFile(params.TextDocument.URI)
 
 	return nil, nil
 }

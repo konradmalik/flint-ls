@@ -152,7 +152,7 @@ func TestFormattingDropsSupersededRequests(t *testing.T) {
 	// stand in for a run already under way, so every request below has to queue
 	// and can be superseded by the ones that arrive after it. holding the lock
 	// rather than leaning on a slow formatter is what makes the count exact.
-	inProgress, _ := h.claimFormatting(uri)
+	inProgress, inProgressGen := h.claimFormatting(uri)
 	inProgress.mu.Lock()
 
 	type outcome struct {
@@ -175,7 +175,7 @@ func TestFormattingDropsSupersededRequests(t *testing.T) {
 	}, 10*time.Second, time.Millisecond, "not all requests registered")
 
 	inProgress.mu.Unlock()
-	h.releaseFormatting(uri, inProgress)
+	h.releaseFormatting(uri, inProgress, inProgressGen)
 	wg.Wait()
 
 	var formatted, superseded int
@@ -307,11 +307,11 @@ func TestForgetDocumentDropsQueuedFormatting(t *testing.T) {
 	h := newTestHandler(t, neverFires)
 	uri := newTestDocument(t, h, "a.txt")
 
-	job, request := h.claimFormatting(uri)
-	defer h.releaseFormatting(uri, job)
+	job, gen := h.claimFormatting(uri)
+	defer h.releaseFormatting(uri, job, gen)
 	h.ForgetDocument(uri)
 
-	assert.True(t, h.formattingSuperseded(job, request),
+	assert.False(t, h.formatCurrent(uri, job, gen),
 		"formatting a document that was closed cannot produce anything useful")
 	assert.Empty(t, h.pendingFormats())
 }
@@ -381,6 +381,40 @@ func TestExitIsServedAfterShutdown(t *testing.T) {
 	// exit is the one message that must not be rejected once shutting down
 	_, err = h.Handle(t.Context(), conn, &jsonrpc2.Request{Method: "exit", Notif: true})
 	assert.NoError(t, err)
+}
+
+// TestProgressIsReportedOnlyWhenTheClientAsked covers the one thing that decides
+// whether $/progress may be sent at all. Reporting progress under a token the
+// client never agreed to is a protocol violation, and some clients say so loudly.
+func TestProgressIsReportedOnlyWhenTheClientAsked(t *testing.T) {
+	tests := []struct {
+		name   string
+		params string
+		want   bool
+	}{
+		{"client supports work done progress", `{"capabilities":{"window":{"workDoneProgress":true}}}`, true},
+		{"client says nothing about it", `{"capabilities":{"window":{}}}`, false},
+		{"client sends no window capabilities", `{"capabilities":{}}`, false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			h := newTestHandler(t, neverFires)
+			raw := json.RawMessage(tt.params)
+
+			_, err := h.HandleInitialize(t.Context(), nil, &jsonrpc2.Request{Method: "initialize", Params: &raw})
+			require.NoError(t, err)
+
+			assert.Equal(t, tt.want, h.notifier(nil).progress)
+		})
+	}
+}
+
+func TestProgressBeforeInitializeIsNotReported(t *testing.T) {
+	h := newTestHandler(t, neverFires)
+
+	assert.False(t, h.notifier(nil).progress,
+		"nothing is known about the client yet, so nothing may be assumed")
 }
 
 func TestDecodeParams(t *testing.T) {
@@ -522,7 +556,7 @@ func (h *LspHandler) formatRequestsSeen(uri types.DocumentURI) uint64 {
 	defer h.mu.Unlock()
 
 	if job, ok := h.formats[uri]; ok {
-		return job.requests
+		return job.gen
 	}
 	return 0
 }
@@ -554,9 +588,7 @@ func appendingFormatCommand() string {
 func newTestHandlerWithLanguage(t *testing.T, debounce time.Duration, language types.Language) *LspHandler {
 	t.Helper()
 
-	langHandler := core.NewHandler(&types.Config{
-		Languages: &map[string][]types.Language{testLanguageID: {language}},
-	})
+	langHandler := core.NewHandler(map[string][]types.Language{testLanguageID: {language}})
 
 	h := NewHandler(langHandler)
 	h.UpdateConfiguration(&types.Config{LintDebounce: debounce})

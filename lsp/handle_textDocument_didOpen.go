@@ -19,7 +19,7 @@ func (h *LspHandler) HandleTextDocumentDidOpen(_ context.Context, conn *jsonrpc2
 		return nil, err
 	}
 
-	h.ScheduleLinting(NewNotifier(conn), doc.URI, types.EventTypeOpen)
+	h.ScheduleLinting(h.notifier(conn), doc.URI, types.EventTypeOpen)
 
 	return nil, nil
 }

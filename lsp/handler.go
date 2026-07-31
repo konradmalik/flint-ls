@@ -37,10 +37,21 @@ type LspHandler struct {
 	// formats holds a job per document with formatting outstanding. Documents
 	// are independent, so they format in parallel; only same-document runs wait
 	// for each other.
-	formats           map[types.DocumentURI]*formatJob
+	formats map[types.DocumentURI]*formatJob
+	// progressSupported is what the client said about work-done progress in
+	// initialize. Until then nothing is reported, which is the safe assumption.
+	progressSupported bool
 	shutdownRequested bool
 	exitRequested     bool
 	closed            bool
+}
+
+// notifier builds the channel back to the client for one piece of work.
+func (h *LspHandler) notifier(conn *jsonrpc2.Conn) *LspNotifier {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	return NewNotifier(conn, h.progressSupported)
 }
 
 // lintJob tracks the pending and in-flight lint runs of a single document.
@@ -75,15 +86,9 @@ type formatJob struct {
 	// not overlap: both would compute edits against the same original text, and
 	// formatters that rewrite the file in place would fight over it.
 	mu sync.Mutex
-	// requests counts the requests seen for this document, so a run waiting on
+	// gen identifies the most recently claimed request, so a request waiting on
 	// mu can tell that a newer one has arrived. Guarded by LspHandler.mu.
-	requests uint64
-	// outstanding is how many requests still reference this job; the job is
-	// forgotten when the last one leaves. Guarded by LspHandler.mu.
-	outstanding int
-	// abandoned marks a document that was closed while requests were queued.
-	// Guarded by LspHandler.mu.
-	abandoned bool
+	gen uint64
 }
 
 func NewHandler(langHandler *core.LangHandler) *LspHandler {
@@ -151,13 +156,13 @@ func (h *LspHandler) Handle(ctx context.Context, conn *jsonrpc2.Conn, req *jsonr
 // Saying so with an error keeps the client honest -- answering with an empty
 // edit list would instead claim the document needs no changes.
 func (h *LspHandler) Formatting(ctx context.Context, reporter core.Reporter, uri types.DocumentURI, rng *types.Range, opt types.FormattingOptions) ([]types.TextEdit, error) {
-	job, request := h.claimFormatting(uri)
-	defer h.releaseFormatting(uri, job)
+	job, gen := h.claimFormatting(uri)
+	defer h.releaseFormatting(uri, job, gen)
 
 	job.mu.Lock()
 	defer job.mu.Unlock()
 
-	if h.formattingSuperseded(job, request) {
+	if !h.formatCurrent(uri, job, gen) {
 		logs.Log.Logf(logs.Debug, "format for %v superseded", uri)
 		return nil, &jsonrpc2.Error{Code: codeContentModified, Message: "superseded by a newer formatting request"}
 	}
@@ -174,7 +179,8 @@ func (h *LspHandler) Formatting(ctx context.Context, reporter core.Reporter, uri
 }
 
 // claimFormatting registers a request against uri's job, creating the job if
-// this is the only request for that document, and returns the request's number.
+// this is the first request for that document, and returns the request's
+// generation.
 func (h *LspHandler) claimFormatting(uri types.DocumentURI) (*formatJob, uint64) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -184,31 +190,34 @@ func (h *LspHandler) claimFormatting(uri types.DocumentURI) (*formatJob, uint64)
 		job = &formatJob{}
 		h.formats[uri] = job
 	}
-	job.requests++
-	job.outstanding++
+	job.gen++
 
-	return job, job.requests
+	return job, job.gen
 }
 
-// formattingSuperseded reports whether the run for request should be skipped
-// because the server moved on while it waited for its turn.
-func (h *LspHandler) formattingSuperseded(job *formatJob, request uint64) bool {
+// formatCurrent reports whether the request identified by gen is still the one
+// the handler expects for uri. Callers must not hold LspHandler.mu.
+//
+// The generation alone is not enough: closing a document drops its job, so a
+// request whose job is no longer the one in the table has been abandoned, and one
+// that finds a newer generation on its own job has been superseded. Either way
+// the edits it would compute describe text nobody is waiting for.
+func (h *LspHandler) formatCurrent(uri types.DocumentURI, job *formatJob, gen uint64) bool {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 
-	return h.closed || job.abandoned || job.requests != request
+	return !h.closed && h.formats[uri] == job && job.gen == gen
 }
 
-// releaseFormatting forgets a document once its last outstanding request is
-// done, so the map holds only documents being formatted right now.
-func (h *LspHandler) releaseFormatting(uri types.DocumentURI, job *formatJob) {
+// releaseFormatting forgets a document once the newest request for it is done, so
+// the map holds only documents being formatted right now. Older requests still
+// queued behind it then find their job gone and give up, which is what being
+// superseded already meant for them.
+func (h *LspHandler) releaseFormatting(uri types.DocumentURI, job *formatJob, gen uint64) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 
-	job.outstanding--
-	// the entry may already have been replaced by a job for a document that was
-	// closed and reopened, which must outlive this one
-	if job.outstanding == 0 && h.formats[uri] == job {
+	if h.formats[uri] == job && job.gen == gen {
 		delete(h.formats, uri)
 	}
 }
@@ -249,12 +258,8 @@ func (h *LspHandler) ForgetDocument(uri types.DocumentURI) {
 		job.supersede()
 		delete(h.lints, uri)
 	}
-	if job, ok := h.formats[uri]; ok {
-		// requests still queued keep their reference to the job and clean it up
-		// themselves; the flag is what tells them to give up
-		job.abandoned = true
-		delete(h.formats, uri)
-	}
+	// a request still queued for this document finds its job gone and gives up
+	delete(h.formats, uri)
 }
 
 func (h *LspHandler) runLinting(reporter core.Reporter, uri types.DocumentURI, job *lintJob, gen uint64, eventType types.EventType) {
@@ -270,12 +275,12 @@ func (h *LspHandler) runLinting(reporter core.Reporter, uri types.DocumentURI, j
 	}
 }
 
-// current reports whether job is still the run the handler expects for uri. The
-// generation alone is not enough: closing a document drops its job, and the one
-// installed when it is reopened starts counting again from the same numbers, so
-// a run left over from before the close would otherwise match it. Callers must
+// lintCurrent reports whether job is still the run the handler expects for uri.
+// The generation alone is not enough: closing a document drops its job, and the
+// one installed when it is reopened starts counting again from the same numbers,
+// so a run left over from before the close would otherwise match it. Callers must
 // hold LspHandler.mu.
-func (h *LspHandler) current(uri types.DocumentURI, job *lintJob, gen uint64) bool {
+func (h *LspHandler) lintCurrent(uri types.DocumentURI, job *lintJob, gen uint64) bool {
 	return h.lints[uri] == job && job.gen == gen
 }
 
@@ -286,7 +291,7 @@ func (h *LspHandler) startLinting(uri types.DocumentURI, job *lintJob, gen uint6
 	h.mu.Lock()
 	defer h.mu.Unlock()
 
-	if h.closed || !h.current(uri, job, gen) {
+	if h.closed || !h.lintCurrent(uri, job, gen) {
 		return nil, false
 	}
 
@@ -305,7 +310,7 @@ func (h *LspHandler) finishLinting(uri types.DocumentURI, job *lintJob, gen uint
 	h.mu.Lock()
 	defer h.mu.Unlock()
 
-	if !h.current(uri, job, gen) {
+	if !h.lintCurrent(uri, job, gen) {
 		// superseded: whoever took over already cancelled our context
 		return
 	}

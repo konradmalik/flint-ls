@@ -4,6 +4,7 @@ package core
 
 import (
 	"os/exec"
+	"strings"
 	"syscall"
 )
 
@@ -14,6 +15,13 @@ const (
 
 func comparePaths(path1, path2 string) bool {
 	return path1 == path2
+}
+
+// shellQuote renders s as a single argument for the shell above. Single quotes
+// suppress every kind of expansion, so the only thing left to handle is a quote
+// in the string itself: close, emit an escaped one, reopen.
+func shellQuote(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }
 
 // makeCmdKillable configures a command so that the command and all of its children will be killed when

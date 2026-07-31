@@ -5,7 +5,9 @@ import "time"
 const Wildcard = "="
 
 type Config struct {
-	Languages *map[string][]Language `json:"languages,omitempty"`
+	// nil means the client said nothing about languages, which is not the same
+	// as it saying there are none
+	Languages map[string][]Language `json:"languages,omitempty"`
 	// how long a document must be idle before it is linted
 	LintDebounce time.Duration `json:"lintDebounce,omitempty"`
 }

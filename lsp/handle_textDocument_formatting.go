@@ -14,7 +14,7 @@ func (h *LspHandler) HandleTextDocumentFormatting(ctx context.Context, conn *jso
 		return nil, err
 	}
 
-	return h.Formatting(ctx, NewNotifier(conn), params.TextDocument.URI, nil, params.Options)
+	return h.Formatting(ctx, h.notifier(conn), params.TextDocument.URI, nil, params.Options)
 }
 
 func (h *LspHandler) HandleTextDocumentRangeFormatting(ctx context.Context, conn *jsonrpc2.Conn, req *jsonrpc2.Request) (any, error) {
@@ -23,5 +23,5 @@ func (h *LspHandler) HandleTextDocumentRangeFormatting(ctx context.Context, conn
 		return nil, err
 	}
 
-	return h.Formatting(ctx, NewNotifier(conn), params.TextDocument.URI, &params.Range, params.Options)
+	return h.Formatting(ctx, h.notifier(conn), params.TextDocument.URI, &params.Range, params.Options)
 }

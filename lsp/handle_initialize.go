@@ -14,5 +14,9 @@ func (h *LspHandler) HandleInitialize(_ context.Context, _ *jsonrpc2.Conn, req *
 		return types.InitializeResult{}, err
 	}
 
+	h.mu.Lock()
+	h.progressSupported = params.Capabilities.Window.WorkDoneProgress
+	h.mu.Unlock()
+
 	return h.langHandler.Initialize(params)
 }

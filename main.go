@@ -43,12 +43,11 @@ func main() {
 		os.Exit(1)
 	}
 
-	config := core.NewConfig()
-	logs.InitializeLogger(logfile, logs.LogLevel(max(loglevel, -1)))
+	logs.InitializeLogger(logfile, logs.LogLevel(min(max(loglevel, int(logs.None)), int(logs.Debug))))
 	logs.Log.Logln(logs.Info, "reading on stdin, writing on stdout")
 
-	internalHandler := core.NewHandler(config)
-	handler := lsp.NewHandler(internalHandler)
+	// the languages arrive later, in a didChangeConfiguration notification
+	handler := lsp.NewHandler(core.NewHandler(nil))
 
 	<-jsonrpc2.NewConn(
 		context.Background(),

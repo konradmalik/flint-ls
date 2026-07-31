@@ -5,3 +5,6 @@ flint-ls.exe
 
 result
 .direnv
+
+# release tooling built from tools/
+bin/

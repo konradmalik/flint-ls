@@ -5,20 +5,11 @@ import (
 	"os"
 )
 
-var Log Logger = &logger{createLogger(""), None}
+// Log is the process-wide logger. It starts silent, so that anything logged
+// before InitializeLogger runs cannot reach the client's stdio.
+var Log = &Logger{createLogger(""), None}
 
 type LogLevel int
-type Logger interface {
-	Logln(LogLevel, string)
-	Logf(LogLevel, string, ...any)
-	Printf(string, ...any)
-	SetLevel(LogLevel)
-}
-
-type logger struct {
-	log   *log.Logger
-	level LogLevel
-}
 
 const (
 	None LogLevel = iota - 1
@@ -28,30 +19,38 @@ const (
 	Debug
 )
 
+// Logger writes the messages that are at or below the level it was given.
+type Logger struct {
+	log   *log.Logger
+	level LogLevel
+}
+
 func InitializeLogger(logfile string, level LogLevel) {
-	Log = &logger{createLogger(logfile), level}
+	Log = &Logger{createLogger(logfile), level}
 }
 
-func (logger *logger) SetLevel(level LogLevel) {
-	logger.level = level
+// Enabled reports whether a message at level would be written. Callers use it to
+// skip building a message that would only be thrown away.
+func (logger *Logger) Enabled(level LogLevel) bool {
+	return level <= logger.level
 }
 
-func (logger logger) Logln(level LogLevel, msg string) {
-	if level <= logger.level {
+func (logger *Logger) Logln(level LogLevel, msg string) {
+	if logger.Enabled(level) {
 		logger.log.Println(msg)
 	}
 }
 
-func (logger logger) Logf(level LogLevel, format string, v ...any) {
-	if level <= logger.level {
+func (logger *Logger) Logf(level LogLevel, format string, v ...any) {
+	if logger.Enabled(level) {
 		logger.log.Printf(format, v...)
 	}
 }
 
-func (logger logger) Printf(format string, v ...any) {
-	if logger.level >= Debug {
-		logger.log.Printf(format, v...)
-	}
+// Printf makes this a jsonrpc2.Logger. That logs the entire message traffic, so
+// it belongs at the debug level and nowhere else.
+func (logger *Logger) Printf(format string, v ...any) {
+	logger.Logf(Debug, format, v...)
 }
 
 func createLogger(logfile string) *log.Logger {

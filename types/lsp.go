@@ -1,6 +1,9 @@
 package types
 
-import "github.com/google/uuid"
+import (
+	"fmt"
+	"sync/atomic"
+)
 
 type DocumentURI string
 
@@ -15,7 +18,15 @@ type InitializeOptions struct {
 	RangeFormatting    bool `json:"documentRangeFormatting"`
 }
 
-type ClientCapabilities struct{}
+type ClientCapabilities struct {
+	Window WindowClientCapabilities `json:"window"`
+}
+
+type WindowClientCapabilities struct {
+	// whether the client handles $/progress notifications for work the server
+	// started on its own
+	WorkDoneProgress bool `json:"workDoneProgress"`
+}
 
 type InitializeResult struct {
 	Capabilities ServerCapabilities `json:"capabilities"`
@@ -100,16 +111,6 @@ type DidSaveTextDocumentParams struct {
 	TextDocument TextDocumentIdentifier `json:"textDocument"`
 }
 
-type TextDocumentPositionParams struct {
-	TextDocument TextDocumentIdentifier `json:"textDocument"`
-	Position     Position               `json:"position"`
-}
-
-type Location struct {
-	URI   DocumentURI `json:"uri"`
-	Range Range       `json:"range"`
-}
-
 type Range struct {
 	Start Position `json:"start"`
 	End   Position `json:"end"`
@@ -118,11 +119,6 @@ type Range struct {
 type Position struct {
 	Line      int `json:"line"`
 	Character int `json:"character"`
-}
-
-type DiagnosticRelatedInformation struct {
-	Location Location `json:"location"`
-	Message  string   `json:"message"`
 }
 
 type DiagnosticSeverity int
@@ -135,12 +131,11 @@ const (
 )
 
 type Diagnostic struct {
-	Range              Range                          `json:"range"`
-	Severity           DiagnosticSeverity             `json:"severity,omitempty"`
-	Code               *int                           `json:"code,omitempty"`
-	Source             *string                        `json:"source,omitempty"`
-	Message            string                         `json:"message"`
-	RelatedInformation []DiagnosticRelatedInformation `json:"relatedInformation,omitempty"`
+	Range    Range              `json:"range"`
+	Severity DiagnosticSeverity `json:"severity,omitempty"`
+	Code     *int               `json:"code,omitempty"`
+	Source   *string            `json:"source,omitempty"`
+	Message  string             `json:"message"`
 }
 
 type PublishDiagnosticsParams struct {
@@ -151,8 +146,12 @@ type PublishDiagnosticsParams struct {
 
 type ProgressToken string
 
+// progressTokens numbers the work-done progress tokens the server hands out. The
+// client only has to tell them apart from each other, so counting is enough.
+var progressTokens atomic.Uint64
+
 func NewProgressToken() ProgressToken {
-	return ProgressToken(uuid.New().String())
+	return ProgressToken(fmt.Sprintf("flint-ls/%d", progressTokens.Add(1)))
 }
 
 type ProgressParams struct {
@@ -163,9 +162,8 @@ type ProgressParams struct {
 type workDoneProgressKind string
 
 const (
-	workBegin  workDoneProgressKind = "begin"
-	workReport workDoneProgressKind = "report"
-	workDone   workDoneProgressKind = "end"
+	workBegin workDoneProgressKind = "begin"
+	workDone  workDoneProgressKind = "end"
 )
 
 type workDoneProgress struct {
@@ -177,10 +175,6 @@ type workDoneProgress struct {
 
 func NewWorkDoneProgressBegin(title string, message *string, percentage *uint) workDoneProgress {
 	return workDoneProgress{Kind: workBegin, Title: &title, Message: message, Percentage: percentage}
-}
-
-func NewWorkDoneProgressReport(message *string, percentage *uint) workDoneProgress {
-	return workDoneProgress{Kind: workReport, Message: message, Percentage: percentage}
 }
 
 func NewWorkDoneProgressEnd(message *string) workDoneProgress {

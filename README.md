@@ -29,7 +29,7 @@ Notable changes from the original:
 - removed explicit support for `LintWorkspace` (linters that lint the whole workspace and do not need filename)
     - it may be implemented back in the future if needed, but I've no usage of such linters, and a quick search through [`creativenull/efmls-configs-nvim`](https://github.com/creativenull/efmls-configs-nvim) showed no usage of this property
     - tracked in [#11](https://github.com/konradmalik/flint-ls/issues/11)
-- added Lsp Progress notifications
+- added Lsp Progress notifications, sent only to clients that advertise `window.workDoneProgress`
 - removed `RootMarkers` from root settings. They can only be provided per language now. The use of this was
   questionable.
 
@@ -130,7 +130,7 @@ Example
 
 ```go
 type Config struct {
-	Languages *map[string][]Language `json:"languages,omitempty"`
+	Languages map[string][]Language `json:"languages,omitempty"`
 	// how long a document must be idle before it is linted, in nanoseconds.
 	// defaults to 100ms; debouncing is per document
 	LintDebounce time.Duration `json:"lintDebounce,omitempty"`
@@ -166,6 +166,29 @@ type Language struct {
 
 Also note that there's a wildcard for language name `=`. So if you want to define some config entry for all languages,
 you can use `=` as a key.
+
+#### Placeholders
+
+`lintCommand` and `formatCommand` may use the following placeholders:
+
+| placeholder   | value                                                     |
+| ------------- | --------------------------------------------------------- |
+| `${INPUT}`    | path of the document being processed, with `/` separators |
+| `${FILENAME}` | the same path, with the platform's separators             |
+| `${ROOT}`     | working directory the command runs in                     |
+| `${FILEEXT}`  | extension of the document, without the leading dot        |
+
+Commands run through a shell. A path placeholder that you leave bare is quoted for you, so paths containing
+spaces or other characters the shell would act on still reach the tool as a single argument. A placeholder you
+quote yourself is substituted as-is, since the quoting it needs is already there — both styles work, and
+configs written for `efm-langserver` need no changes:
+
+```jsonc
+"lintCommand": "eslint -f visualstudio --stdin --stdin-filename ${INPUT}", // quoted for you
+"lintCommand": "cspell lint --no-color \"${INPUT}\"",                      // your quotes are kept
+```
+
+`${FILEEXT}` is never quoted, as it is meant to be substituted mid-word (`foo.${FILEEXT}`).
 
 #### Formatting
 

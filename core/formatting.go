@@ -32,10 +32,8 @@ func (h *LangHandler) RunAllFormatters(
 	}
 	f := snap.file
 
-	configs, err := getFormatConfigsForDocument(f.NormalizedFilename, f.LanguageID, snap.configs)
-	if err != nil {
-		return nil, err
-	}
+	configs := resolveConfigs(f.NormalizedFilename, f.LanguageID, snap.rootPath, snap.configs,
+		func(cfg types.Language) bool { return cfg.FormatCommand != "" })
 	if len(configs) == 0 {
 		logs.Log.Logf(logs.Warn, "no matching format configs for LanguageID: %v", f.LanguageID)
 		return nil, nil
@@ -59,8 +57,7 @@ func (h *LangHandler) RunAllFormatters(
 
 	errors := make([]string, 0)
 	for _, config := range configs {
-		rootPath := findRootPath(f.NormalizedFilename, config.RootMarkers, snap.rootPath)
-		newText, err := formatDocument(ctx, rootPath, f.NormalizedFilename, formattedText, rng, options, config)
+		newText, err := formatDocument(ctx, config.rootPath, f.NormalizedFilename, formattedText, rng, options, config.Language)
 
 		if err != nil {
 			errors = append(errors, err.Error())
@@ -93,12 +90,8 @@ func (h *LangHandler) RunAllFormatters(
 // this needs to accept textToFormat because in case we have multiple formatters, we can pass previous formatted text.
 // otherwise, we'd format the original file over and over.
 func formatDocument(ctx context.Context, rootPath string, filename string, textToFormat string, rng *types.Range, options types.FormattingOptions, config types.Language) (string, error) {
-	cmdStr, err := buildFormatCommandString(rootPath, filename, textToFormat, options, rng, config.FormatCommand)
-	if err != nil {
-		return "", fmt.Errorf("command build error: %s", err)
-	}
-
-	cmd := buildExecCmd(ctx, cmdStr, rootPath, textToFormat, config, true)
+	cmdStr := buildFormatCommandString(rootPath, filename, textToFormat, options, rng, config.FormatCommand)
+	cmd := buildExecCmd(ctx, cmdStr, rootPath, config.Env, strings.NewReader(textToFormat))
 	out, err := runFormattingCommand(cmd)
 
 	logs.Log.Logln(logs.Info, cmdStr)
@@ -137,7 +130,7 @@ func resolveOptionsPlaceholder[T any](re *regexp.Regexp, match string, options m
 	}
 }
 
-func applyOptionsPlaceholders[T any](command string, options map[string]T) (string, error) {
+func applyOptionsPlaceholders[T any](command string, options map[string]T) string {
 	// Handle : syntax (flag:value)
 	command = reColon.ReplaceAllStringFunc(command, func(match string) string {
 		return resolveOptionsPlaceholder(reColon, match, options, " ")
@@ -148,10 +141,10 @@ func applyOptionsPlaceholders[T any](command string, options map[string]T) (stri
 		return resolveOptionsPlaceholder(reEquals, match, options, "=")
 	})
 
-	return strings.TrimSpace(command), nil
+	return strings.TrimSpace(command)
 }
 
-func applyRangePlaceholders(command string, rng *types.Range, text string) (string, error) {
+func applyRangePlaceholders(command string, rng *types.Range, text string) string {
 	lines := strings.Split(text, "\n")
 	charStart := convertRowColToIndex(lines, rng.Start.Line, rng.Start.Character)
 	charEnd := convertRowColToIndex(lines, rng.End.Line, rng.End.Character)
@@ -168,23 +161,16 @@ func applyRangePlaceholders(command string, rng *types.Range, text string) (stri
 	return applyOptionsPlaceholders(command, rangeOptions)
 }
 
-func buildFormatCommandString(rootPath string, filename string, textToFormat string, options types.FormattingOptions, rng *types.Range, command string) (string, error) {
+func buildFormatCommandString(rootPath string, filename string, textToFormat string, options types.FormattingOptions, rng *types.Range, command string) string {
 	command = replaceMagicStrings(command, filename, rootPath)
-
-	var err error
-	command, err = applyOptionsPlaceholders(command, options)
-	if err != nil {
-		return "", err
-	}
+	command = applyOptionsPlaceholders(command, options)
 
 	if rng != nil {
-		command, err = applyRangePlaceholders(command, rng, textToFormat)
-		if err != nil {
-			return "", err
-		}
+		command = applyRangePlaceholders(command, rng, textToFormat)
 	}
 
-	return reUnfilledPlaceholders.ReplaceAllString(command, ""), nil
+	// whatever is left is a placeholder the client gave no value for
+	return reUnfilledPlaceholders.ReplaceAllString(command, "")
 }
 
 func runFormattingCommand(cmd *exec.Cmd) (string, error) {
@@ -195,22 +181,6 @@ func runFormattingCommand(cmd *exec.Cmd) (string, error) {
 		return "", fmt.Errorf("%s: %s", strings.Join(cmd.Args, " "), buf.String())
 	}
 	return string(b), nil
-}
-
-func getFormatConfigsForDocument(fname, langId string, allConfigs map[string][]types.Language) ([]types.Language, error) {
-	var configs []types.Language
-	for _, cfg := range getAllConfigsForLang(allConfigs, langId) {
-		if cfg.FormatCommand == "" {
-			continue
-		}
-		if dir := matchRootPath(fname, cfg.RootMarkers); dir == "" && cfg.RequireMarker {
-			continue
-		}
-
-		configs = append(configs, cfg)
-	}
-
-	return configs, nil
 }
 
 func convertRowColToIndex(lines []string, row, col int) int {

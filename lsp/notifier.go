@@ -13,10 +13,14 @@ import (
 // core.Reporter.
 type LspNotifier struct {
 	conn *jsonrpc2.Conn
+	// progress says whether the client asked to hear about work in progress.
+	// Reporting it to a client that did not is a protocol violation, and clients
+	// that notice complain about a token they never agreed to.
+	progress bool
 }
 
-func NewNotifier(conn *jsonrpc2.Conn) *LspNotifier {
-	return &LspNotifier{conn}
+func NewNotifier(conn *jsonrpc2.Conn, progress bool) *LspNotifier {
+	return &LspNotifier{conn: conn, progress: progress}
 }
 
 func (n *LspNotifier) LogMessage(ctx context.Context, typ types.MessageType, message string) {
@@ -31,6 +35,10 @@ func (n *LspNotifier) PublishDiagnostics(ctx context.Context, params types.Publi
 }
 
 func (n *LspNotifier) Progress(ctx context.Context, params types.ProgressParams) {
+	if !n.progress {
+		return
+	}
+
 	n.notify(ctx, "$/progress", &params)
 }
 

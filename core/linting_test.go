@@ -14,6 +14,7 @@ import (
 	"github.com/konradmalik/flint-ls/types"
 	"github.com/reviewdog/errorformat"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestLintErrorCases(t *testing.T) {
@@ -171,6 +172,101 @@ func TestDiagnosticsResetOnEachRun(t *testing.T) {
 	assert.Len(t, pd, 2)
 	assert.Empty(t, pd[0].Diagnostics)
 	assert.NotEmpty(t, pd[1].Diagnostics)
+}
+
+// TestDiagnosticsOfEveryLinterSurvive covers a document linted by more than one
+// configured linter, which is what a wildcard config next to a language one
+// gives you. Every publish replaces the client's set for the document, so a
+// linter that reported only its own findings would erase the other's.
+func TestDiagnosticsOfEveryLinterSurvive(t *testing.T) {
+	base, _ := os.Getwd()
+	file := filepath.Join(base, "foo")
+	uri := ParseLocalFileToURI(file)
+
+	h := &LangHandler{
+		rootPath: base,
+		configs: map[string][]types.Language{
+			"vim": {
+				{
+					LintCommand:        `echo ` + file + `:1:from the language linter`,
+					LintIgnoreExitCode: true,
+					LintStdin:          true,
+				},
+			},
+			types.Wildcard: {
+				{
+					LintCommand:        `echo ` + file + `:2:from the wildcard linter`,
+					LintIgnoreExitCode: true,
+					LintStdin:          true,
+				},
+			},
+		},
+		files: map[types.DocumentURI]*fileRef{
+			uri: {
+				LanguageID:         "vim",
+				Text:               "line one\nline two\n",
+				NormalizedFilename: file,
+				Uri:                uri,
+			},
+		},
+	}
+
+	pd, err := h.getAllPublishDiagnosticsParamsForUriWithEvent(t, uri, types.EventTypeSave)
+	assert.NoError(t, err)
+
+	// the reset, then one publish per linter
+	require.Len(t, pd, 3)
+	assert.Empty(t, pd[0].Diagnostics)
+	assert.Len(t, pd[1].Diagnostics, 1, "the first linter to finish reports what it found")
+
+	messages := make([]string, 0, 2)
+	for _, d := range pd[2].Diagnostics {
+		messages = append(messages, d.Message)
+	}
+	slices.Sort(messages)
+	assert.Equal(t, []string{"from the language linter", "from the wildcard linter"}, messages,
+		"the last publish is what the client keeps, so it must hold every linter's findings")
+}
+
+// TestLintPathNeedingQuoting covers a filename that the shell would mangle if it
+// were pasted into the command bare.
+func TestLintPathNeedingQuoting(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the lint command below is written as a POSIX shell command")
+	}
+
+	dir := t.TempDir()
+	file := filepath.Join(dir, "a file (1) 'quoted'.txt")
+	require.NoError(t, os.WriteFile(file, []byte("hello"), 0o600))
+	uri := ParseLocalFileToURI(file)
+
+	h := &LangHandler{
+		rootPath: dir,
+		configs: map[string][]types.Language{
+			"vim": {
+				{
+					// reads the file it is given, so it only works if the path
+					// reaches it as a single argument
+					LintCommand:        "echo 1:$(cat ${INPUT})",
+					LintFormats:        []string{"%l:%m"},
+					LintIgnoreExitCode: true,
+				},
+			},
+		},
+		files: map[types.DocumentURI]*fileRef{
+			uri: {
+				LanguageID:         "vim",
+				Text:               "hello",
+				NormalizedFilename: filepath.ToSlash(file),
+				Uri:                uri,
+			},
+		},
+	}
+
+	d, err := h.getAllDiagnosticsForUri(t, uri)
+	require.NoError(t, err)
+	require.Len(t, d, 1)
+	assert.Equal(t, "hello", d[0].Message)
 }
 
 func TestLintFileMatchedWildcard(t *testing.T) {
@@ -571,6 +667,12 @@ func TestGetSeverity(t *testing.T) {
 		{"Hint type", 'N', nil, 0, types.DiagHint},
 		{"Default severity overrides", 'X', nil, types.DiagWarning, types.DiagWarning},
 		{"Category map remap", 'X', map[string]string{"X": "W"}, 0, types.DiagWarning},
+		// a config that maps only some of its linter's categories is fine: the
+		// ones it says nothing about keep what the linter reported
+		{"Category map without the reported type", 'W', map[string]string{"R": "I"}, 0, types.DiagWarning},
+		{"Category map without the reported type falls back to the default", 'X', map[string]string{"R": "I"}, types.DiagHint, types.DiagHint},
+		{"Category map with an empty mapping", 'W', map[string]string{"W": ""}, 0, types.DiagWarning},
+		{"No type reported at all", 0, map[string]string{"R": "I"}, 0, types.DiagError},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

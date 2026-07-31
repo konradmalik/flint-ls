@@ -56,8 +56,7 @@ func TestApplyOptionsPlaceholders(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			out, err := applyOptionsPlaceholders(tt.cmd, tt.opts)
-			assert.NoError(t, err)
+			out := applyOptionsPlaceholders(tt.cmd, tt.opts)
 
 			if tt.exact != "" {
 				assert.Equal(t, tt.exact, out)
@@ -77,8 +76,7 @@ func TestApplyRangePlaceholders(t *testing.T) {
 		End:   types.Position{Line: 0, Character: 4},
 	}
 	text := "abcdef"
-	out, err := applyRangePlaceholders(cmd, rng, text)
-	assert.NoError(t, err)
+	out := applyRangePlaceholders(cmd, rng, text)
 	assert.Contains(t, out, "--flag 2")
 	assert.Contains(t, out, "--flag=4")
 }
@@ -87,9 +85,7 @@ func TestBuildCommandHandlesPlaceholders(t *testing.T) {
 	command := "echo ${flag:opt} ${anotherflag:tpo}"
 	opts := types.FormattingOptions{"opt": "value"}
 
-	cmdStr, err := buildFormatCommandString("/root", "file.txt", "text", opts, nil, command)
-
-	assert.NoError(t, err)
+	cmdStr := buildFormatCommandString("/root", "file.txt", "text", opts, nil, command)
 
 	assert.Contains(t, cmdStr, "flag value")
 	assert.NotContains(t, cmdStr, "anotherflag")

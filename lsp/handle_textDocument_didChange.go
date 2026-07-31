@@ -23,7 +23,7 @@ func (h *LspHandler) HandleTextDocumentDidChange(_ context.Context, conn *jsonrp
 		}
 	}
 
-	h.ScheduleLinting(NewNotifier(conn), params.TextDocument.URI, types.EventTypeChange)
+	h.ScheduleLinting(h.notifier(conn), params.TextDocument.URI, types.EventTypeChange)
 
 	return nil, nil
 }

@@ -3,10 +3,10 @@ package core
 import (
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
-	"strings"
 
 	"github.com/konradmalik/flint-ls/types"
 )
@@ -28,30 +28,19 @@ func normalizedFilenameFromUri(uri types.DocumentURI) (string, error) {
 	return fname, nil
 }
 
-func getAllConfigsForLang(allConfigs map[string][]types.Language, langId string) []types.Language {
-	configsForLang := make([]types.Language, 0)
-	if cfgs, ok := allConfigs[langId]; ok {
-		configsForLang = append(configsForLang, cfgs...)
-	}
-	if cfgs, ok := allConfigs[types.Wildcard]; ok {
-		configsForLang = append(configsForLang, cfgs...)
-	}
-	return configsForLang
-}
-
-func buildExecCmd(ctx context.Context, command, rootPath string, textToFormat string, config types.Language, stdin bool) *exec.Cmd {
+// buildExecCmd prepares a tool invocation. A nil stdin means the tool is not fed
+// the document, which is what a linter that reads the file itself wants.
+func buildExecCmd(ctx context.Context, command, dir string, env []string, stdin io.Reader) *exec.Cmd {
 	cmd := exec.CommandContext(ctx, shell, shellFlag, command)
-	cmd.Dir = rootPath
-	cmd.Env = append(os.Environ(), config.Env...)
-	if stdin {
-		cmd.Stdin = strings.NewReader(textToFormat)
-	}
+	cmd.Dir = dir
+	cmd.Env = append(os.Environ(), env...)
+	cmd.Stdin = stdin
 	makeCmdKillable(cmd)
 
 	return cmd
 }
 
-func itoaPtrIfNotZero(n int) *int {
+func intPtrIfNotZero(n int) *int {
 	if n == 0 {
 		return nil
 	}

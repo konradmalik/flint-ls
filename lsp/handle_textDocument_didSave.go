@@ -22,7 +22,7 @@ func (h *LspHandler) HandleTextDocumentDidSave(_ context.Context, conn *jsonrpc2
 		}
 	}
 
-	h.ScheduleLinting(NewNotifier(conn), params.TextDocument.URI, types.EventTypeSave)
+	h.ScheduleLinting(h.notifier(conn), params.TextDocument.URI, types.EventTypeSave)
 
 	return nil, nil
 }

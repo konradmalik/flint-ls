@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 
@@ -83,17 +84,12 @@ func (h *LangHandler) snapshot(uri types.DocumentURI) (documentSnapshot, error) 
 	return documentSnapshot{file: *f, configs: h.configs, rootPath: h.rootPath}, nil
 }
 
-func NewConfig() *types.Config {
-	languages := make(map[string][]types.Language)
-	return &types.Config{
-		Languages: &languages,
-	}
-}
-
-func NewHandler(config *types.Config) *LangHandler {
-	configs := make(map[string][]types.Language)
-	if config.Languages != nil {
-		configs = *config.Languages
+// NewHandler returns a handler for the given language configuration. Passing nil
+// is normal: most clients send their configuration in a didChangeConfiguration
+// notification rather than at startup.
+func NewHandler(configs map[string][]types.Language) *LangHandler {
+	if configs == nil {
+		configs = make(map[string][]types.Language)
 	}
 
 	return &LangHandler{
@@ -154,15 +150,14 @@ func (h *LangHandler) UpdateConfiguration(config *types.Config) {
 
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	h.configs = *config.Languages
+	h.configs = config.Languages
 }
 
-func (h *LangHandler) CloseFile(uri types.DocumentURI) error {
+func (h *LangHandler) CloseFile(uri types.DocumentURI) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 
 	delete(h.files, uri)
-	return nil
 }
 
 func (h *LangHandler) OpenFile(uri types.DocumentURI, languageID string, version int, text string) error {
@@ -202,48 +197,89 @@ func (h *LangHandler) UpdateFile(uri types.DocumentURI, text string, version *in
 	return nil
 }
 
-// findRootPath resolves the working directory for a tool invocation: the
-// closest ancestor directory matching one of the root markers, else fallback.
-func findRootPath(fname string, markers []string, fallback string) string {
-	if dir := matchRootPath(fname, markers); dir != "" {
-		return dir
-	}
-
-	return fallback
+// resolvedConfig is a language config together with the working directory its
+// tool will run in.
+type resolvedConfig struct {
+	types.Language
+	rootPath string
 }
 
-func matchRootPath(fname string, markers []string) string {
-	dir := filepath.Dir(fname)
-	var prev string
-	for dir != prev {
-		files, _ := os.ReadDir(dir)
-		for _, file := range files {
-			name := file.Name()
-			isDir := file.IsDir()
-			for _, marker := range markers {
-				if strings.HasSuffix(marker, "/") {
-					if !isDir {
-						continue
-					}
-					marker = strings.TrimRight(marker, "/")
-					if ok, _ := filepath.Match(marker, name); ok {
-						return dir
-					}
-				} else {
-					if isDir {
-						continue
-					}
-					if ok, _ := filepath.Match(marker, name); ok {
-						return dir
-					}
-				}
-			}
+// resolveConfigs picks the configs that apply to a document -- those registered
+// for its language plus the wildcard ones -- and pairs each with its working
+// directory. keep decides what "applies" means for the caller, which is the only
+// thing linting and formatting disagree about here.
+//
+// Resolving the directory during selection rather than afterwards is what keeps
+// the marker search to one walk per config: the same walk answers both whether a
+// config requiring a marker may run at all and where its tool should run.
+func resolveConfigs(fname, langID, fallbackRoot string, allConfigs map[string][]types.Language,
+	keep func(types.Language) bool) []resolvedConfig {
+	var configs []resolvedConfig
+	for _, cfg := range slices.Concat(allConfigs[langID], allConfigs[types.Wildcard]) {
+		if !keep(cfg) {
+			continue
 		}
-		prev = dir
-		dir = filepath.Dir(dir)
+
+		dir := matchRootPath(fname, cfg.RootMarkers)
+		if dir == "" {
+			if cfg.RequireMarker {
+				continue
+			}
+			dir = fallbackRoot
+		}
+
+		configs = append(configs, resolvedConfig{Language: cfg, rootPath: dir})
 	}
 
-	return ""
+	return configs
+}
+
+// matchRootPath returns the closest ancestor directory of fname that holds one of
+// the markers, or "" if there is none. A marker ending in "/" has to be a
+// directory, anything else has to not be one.
+func matchRootPath(fname string, markers []string) string {
+	if len(markers) == 0 {
+		// nothing to look for, so nothing to walk the tree for either
+		return ""
+	}
+
+	dir := filepath.Dir(fname)
+	for {
+		if dirHasMarker(dir, markers) {
+			return dir
+		}
+
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			// reached the root without a match
+			return ""
+		}
+		dir = parent
+	}
+}
+
+// dirHasMarker reports whether dir contains one of the markers. filepath.Glob
+// answers a literal marker -- which is what markers almost always are -- with a
+// single stat, and only falls back to reading the whole directory for a marker
+// that actually has a pattern in it.
+func dirHasMarker(dir string, markers []string) bool {
+	for _, marker := range markers {
+		wantDir := strings.HasSuffix(marker, "/")
+
+		matches, err := filepath.Glob(filepath.Join(dir, strings.TrimSuffix(marker, "/")))
+		if err != nil {
+			// malformed pattern: it cannot match anything, anywhere
+			continue
+		}
+
+		for _, match := range matches {
+			if info, err := os.Stat(match); err == nil && info.IsDir() == wantDir {
+				return true
+			}
+		}
+	}
+
+	return false
 }
 
 func isStdinPlaceholder(s string) bool {
@@ -255,21 +291,63 @@ func isStdinPlaceholder(s string) bool {
 	}
 }
 
+// replaceMagicStrings fills in the placeholders a command may use.
+//
+// Commands run through a shell, so a substituted path is quoted: paths routinely
+// contain spaces and parentheses, and pasting one in bare would split it into
+// several arguments. A placeholder that the command already has inside quotes is
+// substituted as it always was, because the quoting it needs is already there --
+// quoting it twice would hand the tool a filename with quote characters in it.
+// So a config that quotes its placeholders behaves exactly as it did before, and
+// only the bare ones, which the shell used to be free to mangle, change.
+//
+// ${FILEEXT} is never quoted: it is substituted mid-word, as in foo.${FILEEXT}.
 func replaceMagicStrings(command, fname, rootPath string) string {
-	ext := filepath.Ext(fname)
-	ext = strings.TrimPrefix(ext, ".")
+	replacements := []struct {
+		placeholder string
+		value       string
+		isPath      bool
+	}{
+		{inputPlaceholder, fname, true},
+		{filenamePlaceholder, filepath.FromSlash(fname), true},
+		{rootPlaceholder, rootPath, true},
+		{fileextPlaceholder, strings.TrimPrefix(filepath.Ext(fname), "."), false},
+	}
 
-	command = strings.ReplaceAll(command, inputPlaceholder, escapeBrackets(fname))
-	command = strings.ReplaceAll(command, fileextPlaceholder, ext)
-	command = strings.ReplaceAll(command, filenamePlaceholder, escapeBrackets(filepath.FromSlash(fname)))
-	command = strings.ReplaceAll(command, rootPlaceholder, escapeBrackets(rootPath))
+	var out strings.Builder
+	var inSingle, inDouble bool
 
-	return command
-}
+scan:
+	for i := 0; i < len(command); {
+		for _, r := range replacements {
+			if !strings.HasPrefix(command[i:], r.placeholder) {
+				continue
+			}
 
-func escapeBrackets(path string) string {
-	path = strings.ReplaceAll(path, "(", `\(`)
-	path = strings.ReplaceAll(path, ")", `\)`)
+			if r.isPath && !inSingle && !inDouble {
+				out.WriteString(shellQuote(r.value))
+			} else {
+				out.WriteString(r.value)
+			}
+			i += len(r.placeholder)
+			continue scan
+		}
 
-	return path
+		// a quote of one kind inside the other kind is just a character
+		switch c := command[i]; {
+		case inSingle:
+			inSingle = c != '\''
+		case inDouble:
+			inDouble = c != '"'
+		case c == '\'':
+			inSingle = true
+		case c == '"':
+			inDouble = true
+		}
+
+		out.WriteByte(command[i])
+		i++
+	}
+
+	return out.String()
 }

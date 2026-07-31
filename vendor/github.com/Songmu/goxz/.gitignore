@@ -1,7 +1,0 @@
-.*
-!.gitignore
-!.github
-goxz/
-dist/
-vendor/
-goxz

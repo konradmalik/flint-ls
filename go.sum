@@ -10,8 +10,8 @@ github.com/pmezard/go-difflib v1.0.0 h1:4DBwDE0NGyQoBHbLQYPwSUPoCMWR5BEzIk/f1lZb
 github.com/pmezard/go-difflib v1.0.0/go.mod h1:iKH77koFhYxTK1pcRnkKkqfTogsbg7gZNVY4sRDYZ/4=
 github.com/reviewdog/errorformat v0.0.0-20250320004447-223c26dbe212 h1:vln3OhpVhkYTVwvdVKSqnJ80IGZyc9M7tIesYpfm/UQ=
 github.com/reviewdog/errorformat v0.0.0-20250320004447-223c26dbe212/go.mod h1:AqhrP0G7F9YRROF10JQwdd4cNO8bdm6bY6KzcOc3Cp8=
-github.com/sourcegraph/jsonrpc2 v0.2.1 h1:2GtljixMQYUYCmIg7W9aF2dFmniq/mOr2T9tFRh6zSQ=
-github.com/sourcegraph/jsonrpc2 v0.2.1/go.mod h1:ZafdZgk/axhT1cvZAPOhw+95nz2I/Ra5qMlU4gTRwIo=
+github.com/sourcegraph/jsonrpc2 v0.2.2 h1:fCyU80iidEwcF9kWaj4ylOO1h8pT8P8sFGv8EKemLaw=
+github.com/sourcegraph/jsonrpc2 v0.2.2/go.mod h1:ZafdZgk/axhT1cvZAPOhw+95nz2I/Ra5qMlU4gTRwIo=
 github.com/stretchr/testify v1.11.1 h1:7s2iGBzp5EwR7/aIZr8ao5+dra3wiQyKjjFuvgVKu7U=
 github.com/stretchr/testify v1.11.1/go.mod h1:wZwfW3scLgRK+23gO65QZefKpKQRnfz6sD981Nm4B6U=
 gopkg.in/check.v1 v0.0.0-20161208181325-20d25e280405 h1:yhCVgyC4o1eVCa2tZl7eS0r+SDo693bJlVdllGtEeKM=

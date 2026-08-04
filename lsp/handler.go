@@ -34,10 +34,10 @@ type LspHandler struct {
 	mu           sync.Mutex
 	lintDebounce time.Duration
 	lints        map[types.DocumentURI]*lintJob
-	// formats holds a job per document with formatting outstanding. Documents
-	// are independent, so they format in parallel; only same-document runs wait
-	// for each other.
-	formats map[types.DocumentURI]*formatJob
+	// formats holds the newest formatting request per document, identified by
+	// pointer. A run whose request is no longer the one in the table has been
+	// superseded.
+	formats map[types.DocumentURI]*formatRequest
 	// progressSupported is what the client said about work-done progress in
 	// initialize. Until then nothing is reported, which is the safe assumption.
 	progressSupported bool
@@ -80,15 +80,13 @@ func (job *lintJob) supersede() {
 	}
 }
 
-// formatJob serializes the formatting of a single document.
-type formatJob struct {
-	// mu is held for the duration of a run. Two runs on the same document must
-	// not overlap: both would compute edits against the same original text, and
-	// formatters that rewrite the file in place would fight over it.
-	mu sync.Mutex
-	// gen identifies the most recently claimed request, so a request waiting on
-	// mu can tell that a newer one has arrived. Guarded by LspHandler.mu.
-	gen uint64
+// formatRequest represents one in-flight formatting request. It is compared by
+// pointer, which is what tells a finished run whether a newer request has
+// arrived for its document. It carries uri so that it is not zero-sized:
+// pointers to distinct zero-size variables may compare equal, which would make
+// every request look like every other.
+type formatRequest struct {
+	uri types.DocumentURI
 }
 
 func NewHandler(langHandler *core.LangHandler) *LspHandler {
@@ -96,7 +94,7 @@ func NewHandler(langHandler *core.LangHandler) *LspHandler {
 		langHandler:  langHandler,
 		lintDebounce: defaultLintDebounce,
 		lints:        make(map[types.DocumentURI]*lintJob),
-		formats:      make(map[types.DocumentURI]*formatJob),
+		formats:      make(map[types.DocumentURI]*formatRequest),
 	}
 }
 
@@ -149,23 +147,15 @@ func (h *LspHandler) Handle(ctx context.Context, conn *jsonrpc2.Conn, req *jsonr
 // Formatting runs every configured formatter for uri and returns the edits that
 // bring the document to its formatted state.
 //
-// Documents format in parallel; requests for the same document wait for each
-// other. A request that finds a newer one queued for its document gives up
-// instead of shelling out: the edits it would compute are stale by construction,
-// and a client that spams formatting should cost one run, not one per request.
-// Saying so with an error keeps the client honest -- answering with an empty
-// edit list would instead claim the document needs no changes.
+// Requests run concurrently, including several for the same document, but only
+// the newest request for a document answers with edits. Every edit set is a diff
+// against the text its own run started from, so a client that applied two of
+// them would apply the second against text the first has already replaced.
+// Saying so with an error keeps the client honest -- answering with an empty edit
+// list would instead claim the document needs no changes.
 func (h *LspHandler) Formatting(ctx context.Context, reporter core.Reporter, uri types.DocumentURI, rng *types.Range, opt types.FormattingOptions) ([]types.TextEdit, error) {
-	job, gen := h.claimFormatting(uri)
-	defer h.releaseFormatting(uri, job, gen)
-
-	job.mu.Lock()
-	defer job.mu.Unlock()
-
-	if !h.formatCurrent(uri, job, gen) {
-		logs.Log.Logf(logs.Debug, "format for %v superseded", uri)
-		return nil, &jsonrpc2.Error{Code: codeContentModified, Message: "superseded by a newer formatting request"}
-	}
+	req := h.claimFormatting(uri)
+	defer h.releaseFormatting(req)
 
 	edits, err := h.langHandler.RunAllFormatters(ctx, reporter, uri, rng, opt)
 	if errors.Is(err, core.ErrDocumentChanged) {
@@ -174,51 +164,53 @@ func (h *LspHandler) Formatting(ctx context.Context, reporter core.Reporter, uri
 		logs.Log.Logf(logs.Debug, "format for %v raced an edit", uri)
 		return nil, &jsonrpc2.Error{Code: codeContentModified, Message: err.Error()}
 	}
-
-	return edits, err
-}
-
-// claimFormatting registers a request against uri's job, creating the job if
-// this is the first request for that document, and returns the request's
-// generation.
-func (h *LspHandler) claimFormatting(uri types.DocumentURI) (*formatJob, uint64) {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-
-	job, ok := h.formats[uri]
-	if !ok {
-		job = &formatJob{}
-		h.formats[uri] = job
+	if err != nil {
+		return nil, err
 	}
-	job.gen++
 
-	return job, job.gen
+	// checked after the run rather than before it, because a request that has
+	// already started is precisely the one whose edits would otherwise reach the
+	// client after a newer request superseded them
+	if !h.formatCurrent(req) {
+		logs.Log.Logf(logs.Debug, "format for %v superseded", uri)
+		return nil, &jsonrpc2.Error{Code: codeContentModified, Message: "superseded by a newer formatting request"}
+	}
+
+	return edits, nil
 }
 
-// formatCurrent reports whether the request identified by gen is still the one
-// the handler expects for uri. Callers must not hold LspHandler.mu.
-//
-// The generation alone is not enough: closing a document drops its job, so a
-// request whose job is no longer the one in the table has been abandoned, and one
-// that finds a newer generation on its own job has been superseded. Either way
-// the edits it would compute describe text nobody is waiting for.
-func (h *LspHandler) formatCurrent(uri types.DocumentURI, job *formatJob, gen uint64) bool {
+// claimFormatting records this request as the newest one for uri.
+func (h *LspHandler) claimFormatting(uri types.DocumentURI) *formatRequest {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 
-	return !h.closed && h.formats[uri] == job && job.gen == gen
+	req := &formatRequest{uri: uri}
+	h.formats[uri] = req
+
+	return req
 }
 
-// releaseFormatting forgets a document once the newest request for it is done, so
-// the map holds only documents being formatted right now. Older requests still
-// queued behind it then find their job gone and give up, which is what being
-// superseded already meant for them.
-func (h *LspHandler) releaseFormatting(uri types.DocumentURI, job *formatJob, gen uint64) {
+// formatCurrent reports whether req is still the newest request for its
+// document. A request whose entry is gone has been abandoned -- the document was
+// closed, the server is shutting down, or a newer request has already finished
+// and cleared it -- and one that finds a different pointer has been superseded.
+// Either way the edits it computed describe text nobody is waiting for.
+func (h *LspHandler) formatCurrent(req *formatRequest) bool {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 
-	if h.formats[uri] == job && job.gen == gen {
-		delete(h.formats, uri)
+	return !h.closed && h.formats[req.uri] == req
+}
+
+// releaseFormatting forgets a document once its newest request is done, so the
+// map holds only documents being formatted right now. Superseded requests leave
+// the newer one's entry alone.
+func (h *LspHandler) releaseFormatting(req *formatRequest) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	if h.formats[req.uri] == req {
+		delete(h.formats, req.uri)
 	}
 }
 
@@ -258,7 +250,7 @@ func (h *LspHandler) ForgetDocument(uri types.DocumentURI) {
 		job.supersede()
 		delete(h.lints, uri)
 	}
-	// a request still queued for this document finds its job gone and gives up
+	// a run still formatting this document finds its entry gone and gives up
 	delete(h.formats, uri)
 }
 
@@ -356,6 +348,6 @@ func (h *LspHandler) Close() {
 		job.supersede()
 		delete(h.lints, uri)
 	}
-	// formatting requests still queued check closed and give up rather than
-	// shell out on the way down; they drop their own jobs as they unwind
+	// runs still formatting find themselves no longer current and discard their
+	// edits; they drop their own entries as they unwind
 }

@@ -149,12 +149,6 @@ func TestFormattingDropsSupersededRequests(t *testing.T) {
 	h := newTestHandler(t, neverFires)
 	uri := newTestDocument(t, h, "a.txt")
 
-	// stand in for a run already under way, so every request below has to queue
-	// and can be superseded by the ones that arrive after it. holding the lock
-	// rather than leaning on a slow formatter is what makes the count exact.
-	inProgress, inProgressGen := h.claimFormatting(uri)
-	inProgress.mu.Lock()
-
 	type outcome struct {
 		edits []types.TextEdit
 		err   error
@@ -168,21 +162,13 @@ func TestFormattingDropsSupersededRequests(t *testing.T) {
 			results[i] = outcome{edits, err}
 		})
 	}
-
-	// let every request register before any of them is allowed to run
-	require.Eventually(t, func() bool {
-		return h.formatRequestsSeen(uri) == requests+1
-	}, 10*time.Second, time.Millisecond, "not all requests registered")
-
-	inProgress.mu.Unlock()
-	h.releaseFormatting(uri, inProgress, inProgressGen)
 	wg.Wait()
 
 	var formatted, superseded int
 	for _, got := range results {
 		if got.err == nil {
 			formatted++
-			assert.NotEmpty(t, got.edits, "a run that happened should return the edits it computed")
+			assert.NotEmpty(t, got.edits, "a run that answered should return the edits it computed")
 			continue
 		}
 
@@ -193,10 +179,76 @@ func TestFormattingDropsSupersededRequests(t *testing.T) {
 		superseded++
 	}
 
-	// a client that spams formatting costs one run, not one per request
-	assert.Equal(t, 1, formatted, "only the newest request should have been served")
+	// whichever request claimed last is the only one whose edits are still
+	// meaningful, however the runs themselves interleaved
+	assert.Equal(t, 1, formatted, "only the newest request should have answered with edits")
 	assert.Equal(t, requests, formatted+superseded, "every request must get an answer")
-	assert.Empty(t, h.pendingFormats(), "the jobs must not outlive the burst")
+	assert.Empty(t, h.pendingFormats(), "the entries must not outlive the burst")
+}
+
+// TestFormattingSupersedesARunThatAlreadyStarted covers the case an async client
+// actually produces: a second request arrives while the first is inside its
+// formatter, so the first is already past any check made before shelling out.
+// Both edit sets are diffs against the same original text, so a client that
+// applied both would apply the second to text the first had replaced.
+func TestFormattingSupersedesARunThatAlreadyStarted(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the barrier below is written as a POSIX shell command")
+	}
+
+	dir := t.TempDir()
+	started := filepath.Join(dir, "started")
+	release := filepath.Join(dir, "release")
+
+	// announces that it is running, then waits to be let go
+	format := fmt.Sprintf(
+		`printf x > %[1]s; n=500; `+
+			`while [ ! -f %[2]s ] && [ "$n" -gt 0 ]; do sleep 0.01; n=$((n-1)); done; tr a-z A-Z`,
+		started, release)
+
+	h := newTestHandlerWithLanguage(t, neverFires, types.Language{FormatCommand: format})
+	uri := newTestDocument(t, h, "a.txt")
+
+	type outcome struct {
+		edits []types.TextEdit
+		err   error
+	}
+	first := make(chan outcome, 1)
+	go func() {
+		edits, err := h.Formatting(t.Context(), &fakeReporter{}, uri, nil, types.FormattingOptions{})
+		first <- outcome{edits, err}
+	}()
+
+	// wait until the first request is inside the formatter, which is what puts it
+	// past the point where it could have given up before doing the work
+	require.Eventually(t, func() bool {
+		_, err := os.Stat(started)
+		return err == nil
+	}, 10*time.Second, time.Millisecond, "the formatter never started")
+
+	firstReq := h.newestFormatRequest(uri)
+	require.NotNil(t, firstReq, "the running request should be the newest one")
+
+	second := make(chan outcome, 1)
+	go func() {
+		edits, err := h.Formatting(t.Context(), &fakeReporter{}, uri, nil, types.FormattingOptions{})
+		second <- outcome{edits, err}
+	}()
+	require.Eventually(t, func() bool {
+		return h.newestFormatRequest(uri) != firstReq
+	}, 10*time.Second, time.Millisecond, "the second request never registered")
+
+	require.NoError(t, os.WriteFile(release, nil, 0o600))
+
+	got1, got2 := <-first, <-second
+
+	assert.Nil(t, got1.edits, "the superseded run's edits must not reach the client")
+	var rpcErr *jsonrpc2.Error
+	require.ErrorAs(t, got1.err, &rpcErr)
+	assert.EqualValues(t, codeContentModified, rpcErr.Code)
+
+	require.NoError(t, got2.err, "the newest request should be the one that answers")
+	assert.NotEmpty(t, got2.edits)
 }
 
 func TestFormattingRunsDocumentsInParallel(t *testing.T) {
@@ -303,15 +355,15 @@ func TestFormattingServesSequentialRequests(t *testing.T) {
 	assert.Empty(t, h.pendingFormats())
 }
 
-func TestForgetDocumentDropsQueuedFormatting(t *testing.T) {
+func TestForgetDocumentDropsInFlightFormatting(t *testing.T) {
 	h := newTestHandler(t, neverFires)
 	uri := newTestDocument(t, h, "a.txt")
 
-	job, gen := h.claimFormatting(uri)
-	defer h.releaseFormatting(uri, job, gen)
+	req := h.claimFormatting(uri)
+	defer h.releaseFormatting(req)
 	h.ForgetDocument(uri)
 
-	assert.False(t, h.formatCurrent(uri, job, gen),
+	assert.False(t, h.formatCurrent(req),
 		"formatting a document that was closed cannot produce anything useful")
 	assert.Empty(t, h.pendingFormats())
 }
@@ -550,15 +602,13 @@ func (h *LspHandler) pendingFormats() []types.DocumentURI {
 	return slices.Collect(maps.Keys(h.formats))
 }
 
-// formatRequestsSeen reports how many formatting requests uri's job has taken.
-func (h *LspHandler) formatRequestsSeen(uri types.DocumentURI) uint64 {
+// newestFormatRequest returns the request the handler currently considers newest
+// for uri, or nil if none is outstanding.
+func (h *LspHandler) newestFormatRequest(uri types.DocumentURI) *formatRequest {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 
-	if job, ok := h.formats[uri]; ok {
-		return job.gen
-	}
-	return 0
+	return h.formats[uri]
 }
 
 func newTestHandler(t *testing.T, debounce time.Duration) *LspHandler {

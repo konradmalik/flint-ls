@@ -43,17 +43,24 @@ func TestScheduleLintingKeepsOnePendingRunPerDocument(t *testing.T) {
 }
 
 func TestScheduleLintingSupersedesEarlierRunOfSameDocument(t *testing.T) {
-	h := newTestHandler(t, neverFires)
+	h := newTestHandler(t, 20*time.Millisecond)
 	reporter := &fakeReporter{}
 	uri := newTestDocument(t, h, "a.txt")
 
+	// a burst of edits, as an editor sends while the user is typing
 	for range 5 {
 		h.ScheduleLinting(reporter, uri, types.EventTypeChange)
 	}
 
-	pending := h.pendingLints()
-	require.Len(t, pending, 1)
-	assert.EqualValues(t, 5, pending[uri].gen, "each schedule should invalidate the previous one")
+	// the linter reports one diagnostic per run, so a burst that cost more than
+	// one run is visible as more than one diagnostic
+	require.Eventually(t, func() bool {
+		return len(reporter.diagnosticsFor(uri)) == 1
+	}, time.Second, time.Millisecond, "the debounced run never happened")
+
+	assert.Empty(t, h.pendingLints(), "the job must not outlive the run")
+	time.Sleep(100 * time.Millisecond)
+	assert.Len(t, reporter.diagnosticsFor(uri), 1, "a superseded schedule ran anyway")
 }
 
 func TestScheduleLintingLintsEveryDocument(t *testing.T) {
@@ -92,28 +99,21 @@ func TestLintRunOfAReopenedDocumentSurvivesTheOldOne(t *testing.T) {
 	reporter := &fakeReporter{}
 	uri := newTestDocument(t, h, "a.txt")
 
-	// a run is scheduled and claims its turn
 	h.ScheduleLinting(reporter, uri, types.EventTypeOpen)
-	stale, staleGen := h.currentLintJob(t, uri)
-	_, ok := h.startLinting(uri, stale, staleGen)
-	require.True(t, ok)
+	stale := h.currentLintJob(t, uri)
 
-	// the document is closed and reopened, which installs a fresh job whose
-	// generation numbers start over from the same place
+	// the document is closed and reopened, which installs a fresh job in place of
+	// the abandoned one
 	h.ForgetDocument(uri)
 	h.ScheduleLinting(reporter, uri, types.EventTypeOpen)
-	fresh, freshGen := h.currentLintJob(t, uri)
+	fresh := h.currentLintJob(t, uri)
 	require.NotSame(t, stale, fresh)
-	require.Equal(t, staleGen, freshGen, "the collision this test is about")
 
-	freshCtx, ok := h.startLinting(uri, fresh, freshGen)
-	require.True(t, ok)
+	// the leftover run unwinding must not disturb the reopened document's run
+	h.finishLinting(stale)
 
-	// the leftover run finishing must not disturb the new document's run
-	h.finishLinting(uri, stale, staleGen)
-
-	assert.NoError(t, freshCtx.Err(), "the reopened document's run was cancelled")
-	assert.Len(t, h.pendingLints(), 1, "the reopened document's job was dropped")
+	require.Len(t, h.pendingLints(), 1, "the reopened document's job was dropped")
+	assert.Same(t, fresh, h.currentLintJob(t, uri))
 }
 
 func TestForgetDocumentDropsScheduledRun(t *testing.T) {
@@ -570,19 +570,15 @@ func (h blockingHandler) Handle(context.Context, *jsonrpc2.Conn, *jsonrpc2.Reque
 }
 
 // pendingLints copies the lint job table so tests can inspect it safely.
-func (h *LspHandler) pendingLints() map[types.DocumentURI]lintJob {
+func (h *LspHandler) pendingLints() map[types.DocumentURI]*lintJob {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 
-	jobs := make(map[types.DocumentURI]lintJob, len(h.lints))
-	for uri, job := range h.lints {
-		jobs[uri] = *job
-	}
-	return jobs
+	return maps.Clone(h.lints)
 }
 
 // currentLintJob returns the job the handler currently holds for uri.
-func (h *LspHandler) currentLintJob(t *testing.T, uri types.DocumentURI) (*lintJob, uint64) {
+func (h *LspHandler) currentLintJob(t *testing.T, uri types.DocumentURI) *lintJob {
 	t.Helper()
 
 	h.mu.Lock()
@@ -591,7 +587,7 @@ func (h *LspHandler) currentLintJob(t *testing.T, uri types.DocumentURI) (*lintJ
 	job, ok := h.lints[uri]
 	require.True(t, ok, "no lint job for %v", uri)
 
-	return job, job.gen
+	return job
 }
 
 // pendingFormats lists the documents with formatting outstanding.

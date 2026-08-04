@@ -54,30 +54,18 @@ func (h *LspHandler) notifier(conn *jsonrpc2.Conn) *LspNotifier {
 	return NewNotifier(conn, h.progressSupported)
 }
 
-// lintJob tracks the pending and in-flight lint runs of a single document.
-// All fields are guarded by LspHandler.mu.
+// lintJob is one scheduled lint run of a single document: a debounce interval
+// followed by the run itself. Cancelling it aborts whichever of the two it is
+// currently in.
+//
+// Jobs are compared by pointer, which is what tells a run whether it is still
+// the one the handler expects for its document. A generation counter would not
+// do: closing a document drops its job, and the one installed when it is
+// reopened would start counting from the same numbers, so a run left over from
+// before the close would look current again.
 type lintJob struct {
-	// timer fires the pending run; nil when nothing is pending.
-	timer *time.Timer
-	// cancel aborts the run currently executing; nil when none is.
+	uri    types.DocumentURI
 	cancel context.CancelFunc
-	// gen identifies the most recently scheduled run. A run that starts or
-	// finishes under a stale gen has been superseded and bails out.
-	gen uint64
-}
-
-// supersede invalidates the pending and in-flight runs of a document. The
-// caller must hold LspHandler.mu.
-func (job *lintJob) supersede() {
-	job.gen++
-	if job.timer != nil {
-		job.timer.Stop()
-		job.timer = nil
-	}
-	if job.cancel != nil {
-		job.cancel()
-		job.cancel = nil
-	}
 }
 
 // formatRequest represents one in-flight formatting request. It is compared by
@@ -219,100 +207,70 @@ func (h *LspHandler) releaseFormatting(req *formatRequest) {
 // run already in flight for uri is cancelled because its results are stale.
 func (h *LspHandler) ScheduleLinting(reporter core.Reporter, uri types.DocumentURI, eventType types.EventType) {
 	h.mu.Lock()
-	defer h.mu.Unlock()
-
 	if h.closed {
+		h.mu.Unlock()
 		return
 	}
 
-	job, ok := h.lints[uri]
-	if !ok {
-		job = &lintJob{}
-		h.lints[uri] = job
+	// whatever was pending or running for this document is superseded: its
+	// results describe text the client has already replaced
+	if prev, ok := h.lints[uri]; ok {
+		prev.cancel()
 	}
-	job.supersede()
 
-	gen := job.gen
-	logs.Log.Logf(logs.Debug, "lint for %v scheduled in %v", uri, h.lintDebounce)
-	job.timer = time.AfterFunc(h.lintDebounce, func() {
-		h.runLinting(reporter, uri, job, gen, eventType)
-	})
+	// linting outlives the notification that triggered it, so it gets a context
+	// of its own instead of borrowing that notification's
+	ctx, cancel := context.WithCancel(context.Background())
+	job := &lintJob{uri: uri, cancel: cancel}
+	h.lints[uri] = job
+	debounce := h.lintDebounce
+	h.mu.Unlock()
+
+	logs.Log.Logf(logs.Debug, "lint for %v scheduled in %v", uri, debounce)
+
+	go func() {
+		defer h.finishLinting(job)
+
+		// the debounce. a newer notification cancels this job before the interval
+		// is up, which is what coalesces a burst of edits into one run
+		select {
+		case <-ctx.Done():
+			logs.Log.Logf(logs.Debug, "lint for %v superseded before it ran", uri)
+			return
+		case <-time.After(debounce):
+		}
+
+		if err := h.langHandler.RunAllLinters(ctx, reporter, uri, eventType); err != nil {
+			logs.Log.Logln(logs.Error, err.Error())
+			reporter.ReportError(ctx, err)
+		}
+	}()
 }
 
 // ForgetDocument drops everything scheduled for uri. Used when a document is
-// closed: its diagnostics are no longer wanted, and formatting requests still
-// queued for it can no longer produce anything useful.
+// closed: its diagnostics are no longer wanted, and a formatting run still going
+// for it can no longer produce anything useful.
 func (h *LspHandler) ForgetDocument(uri types.DocumentURI) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 
 	if job, ok := h.lints[uri]; ok {
-		job.supersede()
+		job.cancel()
 		delete(h.lints, uri)
 	}
 	// a run still formatting this document finds its entry gone and gives up
 	delete(h.formats, uri)
 }
 
-func (h *LspHandler) runLinting(reporter core.Reporter, uri types.DocumentURI, job *lintJob, gen uint64, eventType types.EventType) {
-	ctx, ok := h.startLinting(uri, job, gen)
-	if !ok {
-		return
-	}
-	defer h.finishLinting(uri, job, gen)
-
-	if err := h.langHandler.RunAllLinters(ctx, reporter, uri, eventType); err != nil {
-		logs.Log.Logln(logs.Error, err.Error())
-		reporter.ReportError(ctx, err)
-	}
-}
-
-// lintCurrent reports whether job is still the run the handler expects for uri.
-// The generation alone is not enough: closing a document drops its job, and the
-// one installed when it is reopened starts counting again from the same numbers,
-// so a run left over from before the close would otherwise match it. Callers must
-// hold LspHandler.mu.
-func (h *LspHandler) lintCurrent(uri types.DocumentURI, job *lintJob, gen uint64) bool {
-	return h.lints[uri] == job && job.gen == gen
-}
-
-// startLinting claims the run identified by gen and returns its context. It
-// reports false when a newer run has already superseded this one, which happens
-// when the timer fires just as another notification arrives.
-func (h *LspHandler) startLinting(uri types.DocumentURI, job *lintJob, gen uint64) (context.Context, bool) {
+// finishLinting releases the run's context and forgets the document unless a
+// newer job has taken its place, so the map does not grow with every file opened.
+func (h *LspHandler) finishLinting(job *lintJob) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 
-	if h.closed || !h.lintCurrent(uri, job, gen) {
-		return nil, false
-	}
-
-	// linting outlives the notification that triggered it, so it gets a context
-	// of its own instead of borrowing that notification's
-	ctx, cancel := context.WithCancel(context.Background())
-	job.timer = nil
-	job.cancel = cancel
-
-	return ctx, true
-}
-
-// finishLinting releases the run's context and forgets the document once
-// nothing is scheduled for it, so the map does not grow with every file opened.
-func (h *LspHandler) finishLinting(uri types.DocumentURI, job *lintJob, gen uint64) {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-
-	if !h.lintCurrent(uri, job, gen) {
-		// superseded: whoever took over already cancelled our context
-		return
-	}
-
-	if job.cancel != nil {
-		job.cancel()
-		job.cancel = nil
-	}
-	if job.timer == nil {
-		delete(h.lints, uri)
+	job.cancel()
+	if h.lints[job.uri] == job {
+		delete(h.lints, job.uri)
 	}
 }
 
@@ -345,7 +303,7 @@ func (h *LspHandler) Close() {
 
 	h.closed = true
 	for uri, job := range h.lints {
-		job.supersede()
+		job.cancel()
 		delete(h.lints, uri)
 	}
 	// runs still formatting find themselves no longer current and discard their

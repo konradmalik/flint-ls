@@ -32,8 +32,7 @@ func (h *LangHandler) RunAllFormatters(
 	}
 	f := snap.file
 
-	configs := resolveConfigs(f.NormalizedFilename, f.LanguageID, snap.rootPath, snap.configs,
-		func(cfg types.Language) bool { return cfg.FormatCommand != "" })
+	configs := snap.resolveConfigs(func(cfg types.Language) bool { return cfg.FormatCommand != "" })
 	if len(configs) == 0 {
 		logs.Log.Logf(logs.Warn, "no matching format configs for LanguageID: %v", f.LanguageID)
 		return nil, nil
@@ -104,7 +103,7 @@ func formatDocument(ctx context.Context, rootPath string, filename string, textT
 	return strings.ReplaceAll(out, carriageReturn, ""), nil
 }
 
-func resolveOptionsPlaceholder[T any](re *regexp.Regexp, match string, options map[string]T, sep string) string {
+func resolveOptionsPlaceholder(re *regexp.Regexp, match string, options map[string]any, sep string) string {
 	parts := re.FindStringSubmatch(match)
 	flag, opt := parts[1], parts[2]
 
@@ -116,7 +115,7 @@ func resolveOptionsPlaceholder[T any](re *regexp.Regexp, match string, options m
 		return match // no option found
 	}
 
-	switch b := any(v).(type) {
+	switch b := v.(type) {
 	case bool:
 		if b == !neg { // bool true and not negated, or bool false and negated
 			return flag
@@ -130,7 +129,7 @@ func resolveOptionsPlaceholder[T any](re *regexp.Regexp, match string, options m
 	}
 }
 
-func applyOptionsPlaceholders[T any](command string, options map[string]T) string {
+func applyOptionsPlaceholders(command string, options map[string]any) string {
 	// Handle : syntax (flag:value)
 	command = reColon.ReplaceAllStringFunc(command, func(match string) string {
 		return resolveOptionsPlaceholder(reColon, match, options, " ")
@@ -149,7 +148,7 @@ func applyRangePlaceholders(command string, rng *types.Range, text string) strin
 	charStart := convertRowColToIndex(lines, rng.Start.Line, rng.Start.Character)
 	charEnd := convertRowColToIndex(lines, rng.End.Line, rng.End.Character)
 
-	rangeOptions := map[string]int{
+	rangeOptions := map[string]any{
 		"charStart": charStart,
 		"charEnd":   charEnd,
 		"rowStart":  rng.Start.Line,

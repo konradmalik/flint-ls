@@ -18,18 +18,18 @@ import (
 
 var defaultLintFormats = []string{"%f:%l:%m", "%f:%l:%c:%m"}
 
-// RunAllLinters lints uri with every configured linter that applies to
-// eventType, reporting diagnostics as each linter finishes. It blocks until all
+// RunAllLinters lints uri with every configured linter that applies to any of
+// events, reporting diagnostics as each linter finishes. It blocks until all
 // linters are done or ctx is cancelled.
-func (h *LangHandler) RunAllLinters(ctx context.Context, reporter Reporter, uri types.DocumentURI, eventType types.EventType) error {
+func (h *LangHandler) RunAllLinters(ctx context.Context, reporter Reporter, uri types.DocumentURI, events types.EventType) error {
 	snap, err := h.snapshot(uri)
 	if err != nil {
 		return err
 	}
 	f := snap.file
 
-	configs := resolveConfigs(f.NormalizedFilename, f.LanguageID, snap.rootPath, snap.configs,
-		func(cfg types.Language) bool { return cfg.LintCommand != "" && lintsOnEvent(cfg, eventType) })
+	configs := snap.resolveConfigs(
+		func(cfg types.Language) bool { return cfg.LintCommand != "" && lintsOnAnyEvent(cfg, events) })
 	if len(configs) == 0 {
 		logs.Log.Logf(logs.Debug, "no matching lint configs for LanguageID: %v", f.LanguageID)
 		return nil
@@ -69,6 +69,14 @@ func (h *LangHandler) RunAllLinters(ctx context.Context, reporter Reporter, uri 
 			if err != nil {
 				logs.Log.Logln(logs.Error, err.Error())
 				reporter.ReportError(ctx, err)
+				return
+			}
+
+			// a cancelled run's results describe text the client has already
+			// replaced. it publishes nothing rather than an empty set: killing the
+			// linter left it with no diagnostics to report, and sending those would
+			// wipe out whatever the run that superseded this one has published
+			if ctx.Err() != nil {
 				return
 			}
 
@@ -135,44 +143,48 @@ func lintDocument(ctx context.Context, rootPath string, f fileRef, config types.
 	return diagnostics, nil
 }
 
+var severityByLintType = map[rune]types.DiagnosticSeverity{
+	'E': types.DiagError,
+	'e': types.DiagError,
+	'W': types.DiagWarning,
+	'w': types.DiagWarning,
+	'I': types.DiagInformation,
+	'i': types.DiagInformation,
+	'N': types.DiagHint,
+	'n': types.DiagHint,
+}
+
 func getSeverity(typ rune, categoryMap map[string]string, defaultSeverity types.DiagnosticSeverity) types.DiagnosticSeverity {
 	// we allow the config to provide a mapping between LSP types E,W,I,N and whatever categories the linter has.
 	// a category the config does not mention keeps whatever the linter reported: a partial mapping is a
 	// perfectly reasonable config, and it must not decide the severity of categories it says nothing about
-	if mapped, ok := categoryMap[string(typ)]; ok && mapped != "" {
+	if mapped := categoryMap[string(typ)]; mapped != "" {
 		typ = []rune(mapped)[0]
 	}
 
-	severity := types.DiagError
+	if severity, ok := severityByLintType[typ]; ok {
+		return severity
+	}
 	if defaultSeverity != 0 {
-		severity = defaultSeverity
+		return defaultSeverity
 	}
 
-	switch typ {
-	case 'E', 'e':
-		severity = types.DiagError
-	case 'W', 'w':
-		severity = types.DiagWarning
-	case 'I', 'i':
-		severity = types.DiagInformation
-	case 'N', 'n':
-		severity = types.DiagHint
-	}
-	return severity
+	return types.DiagError
 }
 
-// lintsOnEvent reports whether cfg wants to run for this kind of event. Linting
-// on open, change and save is all on unless the config turns it off.
-func lintsOnEvent(cfg types.Language, eventType types.EventType) bool {
-	switch eventType {
-	case types.EventTypeOpen:
-		return boolOrDefault(cfg.LintAfterOpen, true)
-	case types.EventTypeChange:
-		return boolOrDefault(cfg.LintOnChange, true)
-	case types.EventTypeSave:
-		return boolOrDefault(cfg.LintOnSave, true)
-	default:
+// lintsOnAnyEvent reports whether cfg wants to run for any of the events the run
+// covers. Linting on open, change and save is all on unless the config turns it
+// off.
+func lintsOnAnyEvent(cfg types.Language, events types.EventType) bool {
+	switch {
+	case events&types.EventTypeOpen != 0 && boolOrDefault(cfg.LintAfterOpen, true):
 		return true
+	case events&types.EventTypeChange != 0 && boolOrDefault(cfg.LintOnChange, true):
+		return true
+	case events&types.EventTypeSave != 0 && boolOrDefault(cfg.LintOnSave, true):
+		return true
+	default:
+		return false
 	}
 }
 

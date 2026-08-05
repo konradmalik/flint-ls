@@ -117,6 +117,66 @@ func TestReplaceMagicStrings(t *testing.T) {
 	}
 }
 
+// TestReplaceMagicStringsEscapesInsideQuotes covers the paths that a config's own
+// quotes cannot carry unaided. The expectations are spelled out here; that they
+// are the escaping the shell actually wants is what
+// TestPlaceholdersRoundTripThroughTheShell checks.
+func TestReplaceMagicStringsEscapesInsideQuotes(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the expectations below spell out POSIX shell quoting; cmd quotes differently")
+	}
+
+	tests := []struct {
+		name    string
+		command string
+		fname   string
+		want    string
+	}{
+		{
+			name:    "an apostrophe would end a single quoted argument early",
+			command: `lint '${INPUT}'`,
+			fname:   "/home/u/it's here.ts",
+			want:    `lint '/home/u/it'\''s here.ts'`,
+		},
+		{
+			name:    "a command substitution in a double quoted argument would be run",
+			command: `lint "${INPUT}"`,
+			fname:   "/home/u/$(whoami).ts",
+			want:    `lint "/home/u/\$(whoami).ts"`,
+		},
+		{
+			name:    "backticks and backslashes are literal inside double quotes",
+			command: `lint "${INPUT}"`,
+			fname:   "/home/u/`id`\\x.ts",
+			want:    "lint \"/home/u/\\`id\\`\\\\x.ts\"",
+		},
+		{
+			name:    "a double quote would end a double quoted argument early",
+			command: `lint "${INPUT}"`,
+			fname:   `/home/u/say "hi".ts`,
+			want:    `lint "/home/u/say \"hi\".ts"`,
+		},
+		{
+			name:    "nothing expands inside single quotes, so nothing else is escaped",
+			command: `lint '${INPUT}'`,
+			fname:   "/home/u/$(whoami)`id`.ts",
+			want:    "lint '/home/u/$(whoami)`id`.ts'",
+		},
+		{
+			name:    "the extension is escaped for the quotes it lands in",
+			command: `lint --parser "${FILEEXT}"`,
+			fname:   "/home/u/a.$(id)",
+			want:    `lint --parser "\$(id)"`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, replaceMagicStrings(tt.command, tt.fname, "/home/u"))
+		})
+	}
+}
+
 func TestShellQuoteRoundTripsThroughTheShell(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("printf is not a cmd builtin, and the paths below are not valid Windows paths anyway")
@@ -136,6 +196,44 @@ func TestShellQuoteRoundTripsThroughTheShell(t *testing.T) {
 			require.NoError(t, err)
 			assert.Equal(t, path, string(out), "the shell must hand the tool exactly one unmangled argument")
 		})
+	}
+}
+
+// TestPlaceholdersRoundTripThroughTheShell covers every quoting context a config
+// can put a placeholder in, because getting one wrong does more than mangle a
+// path: inside double quotes the shell expands a $(...) out of a filename and runs
+// it, and inside single quotes an apostrophe ends the string early and the command
+// no longer parses at all.
+func TestPlaceholdersRoundTripThroughTheShell(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("printf is not a cmd builtin, and the paths below are not valid Windows paths anyway")
+	}
+
+	contexts := map[string]string{
+		"bare":          "printf %s ${INPUT}",
+		"double quoted": `printf %s "${INPUT}"`,
+		"single quoted": `printf %s '${INPUT}'`,
+	}
+
+	for _, path := range []string{
+		"/tmp/plain.ts",
+		"/tmp/a file (1).ts",
+		"/tmp/it's here.ts",
+		"/tmp/$HOME `whoami`.ts",
+		`/tmp/back\slash.ts`,
+		"/tmp/$(echo substituted).ts",
+		`/tmp/say "hi".ts`,
+	} {
+		for name, command := range contexts {
+			t.Run(name+" "+path, func(t *testing.T) {
+				cmd := exec.Command(shell, shellFlag, replaceMagicStrings(command, path, "/tmp"))
+				out, err := cmd.Output()
+
+				require.NoError(t, err, "the substituted command has to parse")
+				assert.Equal(t, path, string(out),
+					"the tool must receive exactly the path, expanded by nothing")
+			})
+		}
 	}
 }
 

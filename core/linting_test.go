@@ -10,6 +10,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/konradmalik/flint-ls/types"
 	"github.com/reviewdog/errorformat"
@@ -226,6 +227,67 @@ func TestDiagnosticsOfEveryLinterSurvive(t *testing.T) {
 	slices.Sort(messages)
 	assert.Equal(t, []string{"from the language linter", "from the wildcard linter"}, messages,
 		"the last publish is what the client keeps, so it must hold every linter's findings")
+}
+
+// TestSupersededRunPublishesNothing covers a run cancelled mid-flight, which is
+// what every keystroke does to the run before it. Its linters are killed, so it
+// has nothing left to report -- and publishing that emptiness would wipe out what
+// the run that superseded it has already published, because a publish replaces
+// the client's whole set for the document. Notifications go out regardless of the
+// context, so the run has to hold itself back.
+func TestSupersededRunPublishesNothing(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the lint command below is written as a POSIX shell command")
+	}
+
+	base := t.TempDir()
+	file := filepath.Join(base, "foo")
+	uri := ParseLocalFileToURI(file)
+	started := filepath.Join(base, "started")
+
+	// announces that it is running, then waits to be killed
+	lint := fmt.Sprintf(`printf x > %s; sleep 30; echo 1:too late`, started)
+
+	h := &LangHandler{
+		rootPath: base,
+		configs: map[string][]types.Language{
+			"vim": {
+				{
+					LintCommand:        lint,
+					LintFormats:        []string{"%l:%m"},
+					LintIgnoreExitCode: true,
+					LintStdin:          true,
+				},
+			},
+		},
+		files: map[types.DocumentURI]*fileRef{
+			uri: {
+				LanguageID:         "vim",
+				Text:               "line one\n",
+				NormalizedFilename: file,
+				Uri:                uri,
+			},
+		},
+	}
+
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+
+	reporter := &recordingReporter{}
+	done := make(chan error, 1)
+	go func() { done <- h.RunAllLinters(ctx, reporter, uri, types.EventTypeChange) }()
+
+	require.Eventually(t, func() bool {
+		_, err := os.Stat(started)
+		return err == nil
+	}, 10*time.Second, time.Millisecond, "the linter never started")
+
+	cancel()
+	require.NoError(t, <-done)
+
+	published := reporter.publishedDiagnostics()
+	require.Len(t, published, 1, "a cancelled run must publish nothing beyond its initial reset")
+	assert.Empty(t, published[0].Diagnostics)
 }
 
 // TestLintPathNeedingQuoting covers a filename that the shell would mangle if it
@@ -637,6 +699,22 @@ func TestLintEventTypes(t *testing.T) {
 			name:           "LintOnSave false",
 			event:          types.EventTypeSave,
 			lintOnSave:     false,
+			expectMessages: 0,
+		},
+		// a run covering more than one event is what a schedule that superseded an
+		// earlier one produces: it has to lint for a config that wants either
+		{
+			name:           "combined events, config wants only one of them",
+			event:          types.EventTypeSave | types.EventTypeChange,
+			lintOnSave:     true,
+			lintOnChange:   false,
+			expectMessages: 1,
+		},
+		{
+			name:           "combined events, config wants neither",
+			event:          types.EventTypeSave | types.EventTypeChange,
+			lintOnSave:     false,
+			lintOnChange:   false,
 			expectMessages: 0,
 		},
 	}

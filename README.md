@@ -72,8 +72,7 @@ Usage of flint-ls:
   -logfile string
         File to save logs into. If provided stderr won't be used anymore.
   -loglevel int
-        Set the log level. Max is 5, min is 0. (default 1)
-  -q    Run quiet
+        Set the log level. Max is 3 (debug), min is 0 (error). Higher number logs less. Set <0 for no logs. (default 2)
   -v    Print the version
 ```
 

@@ -63,6 +63,83 @@ func TestScheduleLintingSupersedesEarlierRunOfSameDocument(t *testing.T) {
 	assert.Len(t, reporter.diagnosticsFor(uri), 1, "a superseded schedule ran anyway")
 }
 
+// TestScheduleLintingInheritsEventsOfARunItReplaced covers a config that lints for
+// one kind of event only -- an expensive linter set to run on save, say -- and a
+// keystroke that arrives before the save's run has started. The change run takes
+// the save run's place, so unless it lints for the save event too that linter never
+// runs, and the document shows nothing from it until the next save.
+func TestScheduleLintingInheritsEventsOfARunItReplaced(t *testing.T) {
+	lintOnChange := false
+	h := newTestHandlerWithLanguage(t, 20*time.Millisecond, types.Language{
+		LintCommand:        "echo 1:save only",
+		LintFormats:        []string{"%l:%m"},
+		LintStdin:          true,
+		LintIgnoreExitCode: true,
+		LintOnChange:       &lintOnChange,
+	})
+	reporter := &fakeReporter{}
+	uri := newTestDocument(t, h, "a.txt")
+
+	h.ScheduleLinting(reporter, uri, types.EventTypeSave)
+	h.ScheduleLinting(reporter, uri, types.EventTypeChange)
+
+	require.Eventually(t, func() bool {
+		return len(reporter.diagnosticsFor(uri)) == 1
+	}, time.Second, time.Millisecond, "the save-only linter was dropped by the keystroke that followed")
+}
+
+// TestScheduleLintingDoesNotInheritFromARunThatStarted is the other half: a run
+// that is already linting keeps its events to itself. Handing them on would run
+// its linters again for every keystroke that arrives while it works, which is the
+// opposite of what a config restricted to one event asked for.
+func TestScheduleLintingDoesNotInheritFromARunThatStarted(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the barrier below is written as a POSIX shell command")
+	}
+
+	dir := t.TempDir()
+	started := filepath.Join(dir, "started")
+	release := filepath.Join(dir, "release")
+
+	// records that it ran, then waits to be let go
+	lint := fmt.Sprintf(
+		`printf x >> %[1]s; n=500; `+
+			`while [ ! -f %[2]s ] && [ "$n" -gt 0 ]; do sleep 0.01; n=$((n-1)); done; echo 1:save only`,
+		started, release)
+
+	lintOnChange := false
+	h := newTestHandlerWithLanguage(t, time.Millisecond, types.Language{
+		LintCommand:        lint,
+		LintFormats:        []string{"%l:%m"},
+		LintStdin:          true,
+		LintIgnoreExitCode: true,
+		LintOnChange:       &lintOnChange,
+	})
+	reporter := &fakeReporter{}
+	uri := newTestDocument(t, h, "a.txt")
+
+	h.ScheduleLinting(reporter, uri, types.EventTypeSave)
+	require.Eventually(t, func() bool {
+		_, err := os.Stat(started)
+		return err == nil
+	}, 10*time.Second, time.Millisecond, "the linter never started")
+
+	// the run is past its debounce, so a keystroke now gets a plain change run --
+	// which this config wants no part of
+	h.ScheduleLinting(reporter, uri, types.EventTypeChange)
+	require.NoError(t, os.WriteFile(release, nil, 0o600))
+
+	require.Eventually(t, func() bool {
+		return len(h.pendingLints()) == 0
+	}, 10*time.Second, time.Millisecond, "the runs never settled")
+
+	runs, err := os.ReadFile(started)
+	require.NoError(t, err)
+	assert.Len(t, runs, 1, "the save-only linter ran again for a change it does not lint on")
+	assert.Empty(t, reporter.diagnosticsFor(uri),
+		"the cancelled run must not report, and the change run had nothing to run")
+}
+
 func TestScheduleLintingLintsEveryDocument(t *testing.T) {
 	h := newTestHandler(t, time.Millisecond)
 	reporter := &fakeReporter{}
@@ -360,10 +437,9 @@ func TestForgetDocumentDropsInFlightFormatting(t *testing.T) {
 	uri := newTestDocument(t, h, "a.txt")
 
 	req := h.claimFormatting(uri)
-	defer h.releaseFormatting(req)
 	h.ForgetDocument(uri)
 
-	assert.False(t, h.formatCurrent(req),
+	assert.False(t, h.finishFormatting(req),
 		"formatting a document that was closed cannot produce anything useful")
 	assert.Empty(t, h.pendingFormats())
 }

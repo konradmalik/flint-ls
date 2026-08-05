@@ -204,28 +204,27 @@ type resolvedConfig struct {
 	rootPath string
 }
 
-// resolveConfigs picks the configs that apply to a document -- those registered
-// for its language plus the wildcard ones -- and pairs each with its working
-// directory. keep decides what "applies" means for the caller, which is the only
-// thing linting and formatting disagree about here.
+// resolveConfigs picks the configs that apply to the snapshot's document --
+// those registered for its language plus the wildcard ones -- and pairs each with
+// its working directory. keep decides what "applies" means for the caller, which
+// is the only thing linting and formatting disagree about here.
 //
 // Resolving the directory during selection rather than afterwards is what keeps
 // the marker search to one walk per config: the same walk answers both whether a
 // config requiring a marker may run at all and where its tool should run.
-func resolveConfigs(fname, langID, fallbackRoot string, allConfigs map[string][]types.Language,
-	keep func(types.Language) bool) []resolvedConfig {
+func (s documentSnapshot) resolveConfigs(keep func(types.Language) bool) []resolvedConfig {
 	var configs []resolvedConfig
-	for _, cfg := range slices.Concat(allConfigs[langID], allConfigs[types.Wildcard]) {
+	for _, cfg := range slices.Concat(s.configs[s.file.LanguageID], s.configs[types.Wildcard]) {
 		if !keep(cfg) {
 			continue
 		}
 
-		dir := matchRootPath(fname, cfg.RootMarkers)
+		dir := matchRootPath(s.file.NormalizedFilename, cfg.RootMarkers)
 		if dir == "" {
 			if cfg.RequireMarker {
 				continue
 			}
-			dir = fallbackRoot
+			dir = s.rootPath
 		}
 
 		configs = append(configs, resolvedConfig{Language: cfg, rootPath: dir})
@@ -293,20 +292,26 @@ func isStdinPlaceholder(s string) bool {
 
 // replaceMagicStrings fills in the placeholders a command may use.
 //
-// Commands run through a shell, so a substituted path is quoted: paths routinely
-// contain spaces and parentheses, and pasting one in bare would split it into
-// several arguments. A placeholder that the command already has inside quotes is
-// substituted as it always was, because the quoting it needs is already there --
-// quoting it twice would hand the tool a filename with quote characters in it.
-// So a config that quotes its placeholders behaves exactly as it did before, and
-// only the bare ones, which the shell used to be free to mangle, change.
+// Commands run through a shell, so a value is escaped for wherever in the command
+// it lands. A bare placeholder is quoted, because paths routinely contain spaces
+// and parentheses and pasting one in bare would split it into several arguments.
+// A placeholder the config already put inside quotes is not quoted again -- that
+// would hand the tool a filename with quote characters in it -- but it is still
+// escaped for the kind of quotes it is in, because a value can end that string
+// early, and inside double quotes the shell would go on to expand a $(...) in a
+// filename instead of passing it along.
+//
+// A path holding none of those characters comes out exactly as it did before, so
+// configs that quote their own placeholders are unaffected.
 //
 // ${FILEEXT} is never quoted: it is substituted mid-word, as in foo.${FILEEXT}.
 func replaceMagicStrings(command, fname, rootPath string) string {
 	replacements := []struct {
 		placeholder string
 		value       string
-		isPath      bool
+		// whether a bare occurrence is quoted, which is what a path needs and an
+		// extension spliced into the middle of a word must not have
+		quoteBare bool
 	}{
 		{inputPlaceholder, fname, true},
 		{filenamePlaceholder, filepath.FromSlash(fname), true},
@@ -324,9 +329,14 @@ scan:
 				continue
 			}
 
-			if r.isPath && !inSingle && !inDouble {
+			switch {
+			case inSingle:
+				out.WriteString(escapeInSingleQuotes(r.value))
+			case inDouble:
+				out.WriteString(escapeInDoubleQuotes(r.value))
+			case r.quoteBare:
 				out.WriteString(shellQuote(r.value))
-			} else {
+			default:
 				out.WriteString(r.value)
 			}
 			i += len(r.placeholder)

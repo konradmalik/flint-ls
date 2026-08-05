@@ -39,10 +39,14 @@ type Language struct {
 	FormatCanRange bool   `json:"formatCanRange,omitempty"`
 }
 
+// EventType is a set of the document events a lint run covers. It is a set
+// because a run can be asked to cover the events of a run it replaces: a
+// scheduled run that a later notification supersedes would otherwise take the
+// linters only it would have used down with it.
 type EventType int
 
 const (
-	EventTypeChange EventType = iota
+	EventTypeChange EventType = 1 << iota
 	EventTypeSave
 	EventTypeOpen
 )

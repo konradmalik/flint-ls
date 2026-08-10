@@ -28,13 +28,19 @@
         pkgs:
         let
           system = pkgs.stdenvNoCC.hostPlatform.system;
-        in
-        {
           default = pkgs.mkShell {
             name = "flint";
             packages = with pkgs; [
               prettier
             ];
+            inputsFrom = [ self.packages.${system}.default ];
+          };
+        in
+        {
+          inherit default;
+          ci = pkgs.mkShell {
+            name = "flint-ci";
+            packages = [ pkgs.neovim-unwrapped ];
             inputsFrom = [ self.packages.${system}.default ];
           };
         }
@@ -50,6 +56,7 @@
             let
               binary = if os == "windows" then "${pname}.exe" else pname;
             in
+            # bash
             ''
               binary=$(find $out -type f -name ${binary})
               mv $binary $out/${binary}

@@ -8,3 +8,7 @@ result
 
 # release tooling built from tools/
 bin/
+
+# the efmls-configs corpus, cloned by `make efmls-clone`. Not committed so that CI
+# checks against what upstream ships today rather than a copy that went stale here.
+core/testdata/efmls-configs/

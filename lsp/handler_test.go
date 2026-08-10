@@ -58,7 +58,12 @@ func TestScheduleLintingSupersedesEarlierRunOfSameDocument(t *testing.T) {
 		return len(reporter.diagnosticsFor(uri)) == 1
 	}, time.Second, time.Millisecond, "the debounced run never happened")
 
-	assert.Empty(t, h.pendingLints(), "the job must not outlive the run")
+	// the job forgets itself after the run reports, so the diagnostic above can
+	// land before the entry is gone
+	assert.Eventually(t, func() bool {
+		return len(h.pendingLints()) == 0
+	}, time.Second, time.Millisecond, "the job must not outlive the run")
+
 	time.Sleep(100 * time.Millisecond)
 	assert.Len(t, reporter.diagnosticsFor(uri), 1, "a superseded schedule ran anyway")
 }

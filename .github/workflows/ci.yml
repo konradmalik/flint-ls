@@ -36,3 +36,17 @@ jobs:
         run: nix flake check
       - name: Nix build
         run: nix build
+
+  # the compatibility tests need a corpus that is not in the repo and an nvim to
+  # evaluate it, so they get their own job rather than a matrix entry. It runs
+  # against upstream's current main, which is what makes a config people rely on
+  # breaking show up here rather than in an issue.
+  efmls-configs:
+    name: efmls-configs compatibility
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+      - uses: cachix/install-nix-action@v31
+      - name: Test against the current efmls-configs
+        run: nix develop .#ci --command make test-efmls

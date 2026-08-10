@@ -30,6 +30,39 @@ cross: $(TOOLS_BIN)/goxz
 test: build
 	go test -v ./...
 
+EFMLS_CONFIGS_DIR ?= core/testdata/efmls-configs
+
+# the corpus of linter and formatter configs that the compatibility tests check
+# flint-ls against. Not in git, so a clean checkout -- which is every CI run -- gets
+# whatever upstream ships that day, while a working copy keeps the clone it already
+# has. `rm -rf $(EFMLS_CONFIGS_DIR)` is how you refresh one by hand.
+#
+# Cloned aside and moved into place so that an interrupted clone leaves no directory
+# for the next run to mistake for a finished one.
+$(EFMLS_CONFIGS_DIR):
+	rm -rf "$@.partial"
+	git clone --quiet --depth 1 --single-branch \
+		https://github.com/creativenull/efmls-configs-nvim "$@.partial"
+	mv "$@.partial" "$@"
+
+# the compatibility tests, insisting on a corpus rather than skipping when there is
+# none. Needs an nvim on PATH, because the configs are lua that decides what to return
+# when it is loaded; `nix develop .#ci` has one for machines without.
+#
+# -count=1 because the corpus is read by nvim rather than by the test, so go's test
+# cache cannot see it change and would answer a refreshed corpus from a stale pass.
+.PHONY: test-efmls
+test-efmls: $(EFMLS_CONFIGS_DIR)
+	EFMLS_REQUIRE_CORPUS=1 go test ./core -run TestEfmls -v -count=1
+
+# everything, for when you want the compatibility tests included rather than skipped.
+# `test` on its own stays offline and needs no nvim, which is what CI's os matrix runs.
+#
+# The corpus comes first so that the run inside `test` finds one, instead of reporting
+# a skip for tests that `test-efmls` goes on to run anyway.
+.PHONY: test-all
+test-all: $(EFMLS_CONFIGS_DIR) test test-efmls
+
 .PHONY: lint
 lint:
 	go mod tidy

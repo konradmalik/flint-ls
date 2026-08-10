@@ -3,9 +3,11 @@ package core
 import (
 	"strings"
 	"testing"
+	"unicode/utf16"
 
 	"github.com/konradmalik/flint-ls/types"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestComputeEdits(t *testing.T) {
@@ -193,6 +195,8 @@ func TestComputeEdits(t *testing.T) {
 			},
 		},
 		{
+			// there is no line 2 to point at, so the edit has to end at the end of
+			// line 1 instead
 			name:   "no trailing newline in before",
 			before: "line1\nline2",
 			after:  "line1\nline3",
@@ -200,9 +204,68 @@ func TestComputeEdits(t *testing.T) {
 				{
 					Range: types.Range{
 						Start: types.Position{Line: 1, Character: 0},
-						End:   types.Position{Line: 2, Character: 0},
+						End:   types.Position{Line: 1, Character: 5},
 					},
 					NewText: "line3",
+				},
+			},
+		},
+		{
+			name:   "single line without newline",
+			before: "a",
+			after:  "b",
+			expected: []types.TextEdit{
+				{
+					Range: types.Range{
+						Start: types.Position{Line: 0, Character: 0},
+						End:   types.Position{Line: 0, Character: 1},
+					},
+					NewText: "b",
+				},
+			},
+		},
+		{
+			// the clamped end counts utf16 code units, not bytes: this line is 5
+			// characters but 6 bytes long
+			name:   "multibyte last line without newline",
+			before: "x\nhéllo",
+			after:  "x\nhello",
+			expected: []types.TextEdit{
+				{
+					Range: types.Range{
+						Start: types.Position{Line: 1, Character: 0},
+						End:   types.Position{Line: 1, Character: 5},
+					},
+					NewText: "hello",
+				},
+			},
+		},
+		{
+			// and an astral character is two of those code units
+			name:   "astral last line without newline",
+			before: "x\n😊",
+			after:  "x\n😊😊",
+			expected: []types.TextEdit{
+				{
+					Range: types.Range{
+						Start: types.Position{Line: 1, Character: 0},
+						End:   types.Position{Line: 1, Character: 2},
+					},
+					NewText: "😊😊",
+				},
+			},
+		},
+		{
+			name:   "trailing newline added",
+			before: "line1\nline2",
+			after:  "line1\nline2\n",
+			expected: []types.TextEdit{
+				{
+					Range: types.Range{
+						Start: types.Position{Line: 1, Character: 0},
+						End:   types.Position{Line: 1, Character: 5},
+					},
+					NewText: "line2\n",
 				},
 			},
 		},
@@ -238,36 +301,14 @@ func TestComputeEdits(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			uri := types.DocumentURI("file:///test.txt")
-			actual, err := ComputeEdits(uri, tt.before, tt.after)
+			actual, err := ComputeEdits(tt.before, tt.after)
 			assert.NoError(t, err)
 
-			// Validate expected exact match if provided
 			assert.Equal(t, tt.expected, actual)
 
-			// Validate correctness by applying edits
-			afterApplied := applyEdits(tt.before, actual)
-			assert.Equal(t, tt.after, afterApplied)
-
-			// Validate that edits are sorted and non-overlapping
-			for i := 1; i < len(actual); i++ {
-				prev := actual[i-1]
-				curr := actual[i]
-				if curr.Range.Start.Line < prev.Range.End.Line ||
-					(curr.Range.Start.Line == prev.Range.End.Line && curr.Range.Start.Character < prev.Range.End.Character) {
-					t.Errorf("[%s] Edits are overlapping or out of order: edit %d and %d", tt.name, i-1, i)
-				}
-			}
-
-			// Validate that ranges are valid
-			for i, e := range actual {
-				if e.Range.Start.Line < 0 || e.Range.End.Line < e.Range.Start.Line {
-					t.Errorf("[%s] Edit %d has invalid line range: %+v", tt.name, i, e.Range)
-				}
-				if e.Range.Start.Character < 0 || e.Range.End.Character < 0 {
-					t.Errorf("[%s] Edit %d has negative character position: %+v", tt.name, i, e.Range)
-				}
-			}
+			// applyEdits rejects positions the document does not have and edits that
+			// overlap or run backwards, so this covers the ranges as well as the text
+			assert.Equal(t, tt.after, applyEdits(t, tt.before, actual))
 		})
 	}
 }
@@ -287,12 +328,10 @@ func TestComputeEditsLargeInput(t *testing.T) {
 		}
 	}
 
-	uri := types.DocumentURI("file:///large.txt")
-	edits, err := ComputeEdits(uri, before.String(), after.String())
+	edits, err := ComputeEdits(before.String(), after.String())
 	assert.NoError(t, err)
 
-	afterApplied := applyEdits(before.String(), edits)
-	assert.Equal(t, after.String(), afterApplied)
+	assert.Equal(t, after.String(), applyEdits(t, before.String(), edits))
 }
 
 func TestComputeEditsComplexScenario(t *testing.T) {
@@ -322,38 +361,59 @@ func main() {
 }
 `
 
-	uri := types.DocumentURI("file:///main.go")
-	edits, err := ComputeEdits(uri, before, after)
+	edits, err := ComputeEdits(before, after)
 	assert.NoError(t, err)
 
-	afterApplied := applyEdits(before, edits)
-	assert.Equal(t, after, afterApplied)
+	assert.Equal(t, after, applyEdits(t, before, edits))
 }
 
-// applyEdits applies LSP-style text edits to the given text.
-func applyEdits(text string, edits []types.TextEdit) string {
-	lines := strings.SplitAfter(text, "\n")
+// applyEdits applies LSP text edits the way a client does, and fails the test on
+// anything a client could not apply: a position the document does not have, or
+// edits that overlap or arrive out of order.
+func applyEdits(t *testing.T, text string, edits []types.TextEdit) string {
+	t.Helper()
+
 	var result strings.Builder
-	lastLine := 0
+	offset := 0
+	for i, e := range edits {
+		start := offsetOf(t, text, e.Range.Start)
+		end := offsetOf(t, text, e.Range.End)
+		require.LessOrEqual(t, start, end, "edit %d ends before it starts: %+v", i, e.Range)
+		require.LessOrEqual(t, offset, start, "edit %d overlaps the one before it: %+v", i, e.Range)
 
-	for _, e := range edits {
-		// Write unchanged part
-		for i := lastLine; i < e.Range.Start.Line; i++ {
-			if i < len(lines) {
-				result.WriteString(lines[i])
-			}
-		}
-
-		// Write replacement text
+		result.WriteString(text[offset:start])
 		result.WriteString(e.NewText)
-
-		lastLine = e.Range.End.Line
+		offset = end
 	}
-
-	// Append remaining lines
-	for i := lastLine; i < len(lines); i++ {
-		result.WriteString(lines[i])
-	}
+	result.WriteString(text[offset:])
 
 	return result.String()
+}
+
+// offsetOf converts an LSP position into a byte offset, failing the test if the
+// document has no such position. Characters count utf16 code units.
+func offsetOf(t *testing.T, text string, pos types.Position) int {
+	t.Helper()
+
+	lines := strings.Split(text, "\n")
+	require.GreaterOrEqual(t, pos.Line, 0, "negative line in %+v", pos)
+	require.Less(t, pos.Line, len(lines), "no line %d in %q", pos.Line, text)
+
+	offset := 0
+	for _, l := range lines[:pos.Line] {
+		offset += len(l) + 1 // the newline that the split dropped
+	}
+
+	character := 0
+	for i, r := range lines[pos.Line] {
+		if character == pos.Character {
+			return offset + i
+		}
+		character += utf16.RuneLen(r)
+	}
+	// the position may sit just past the last character of the line, but no further,
+	// and it may not sit inside a surrogate pair
+	require.Equal(t, pos.Character, character, "no character %d on line %d of %q", pos.Character, pos.Line, text)
+
+	return offset + len(lines[pos.Line])
 }

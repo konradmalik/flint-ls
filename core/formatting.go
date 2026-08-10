@@ -83,7 +83,7 @@ func (h *LangHandler) RunAllFormatters(
 
 	logs.Log.Logln(logs.Info, "format succeeded")
 
-	return ComputeEdits(uri, originalText, formattedText)
+	return ComputeEdits(originalText, formattedText)
 }
 
 // this needs to accept textToFormat because in case we have multiple formatters, we can pass previous formatted text.

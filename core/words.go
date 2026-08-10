@@ -8,56 +8,69 @@ import (
 	"github.com/konradmalik/flint-ls/types"
 )
 
+// characters fall into one of these classes and a token is a run of characters
+// of a single class, which is how vim decides where a word ends too
+type charClass int
+
 const (
-	invalid = iota - 1
-	blank
-	punctuation
-	word
+	// nothing has been classified yet
+	classNone charClass = iota
+	classBlank
+	classWord
+	classPunct
 )
 
+// WordEndUtf16 returns the character offset just past the token that starts at
+// pos, which is where a range highlighting that token has to end. A token is a
+// run of characters of one class, so it ends at the first space after a word, at
+// the first letter after an operator, and always at the end of the line.
+//
+// Only the text from pos onwards is looked at: the caller wants to highlight
+// what it points at, so a pos in the middle of a word must not give back a range
+// reaching past that word.
+//
+// pos.Character is returned unchanged when pos points past the end of the line,
+// which gives an empty range instead of one highlighting something arbitrary.
+//
 // lsp can now select encoding from the list that clients send that they support,
-// but utf16 is selected if the server does not send it and is required for backwards compatibility,
-// so we just support utf16
-func WordAtUtf16(text string, pos types.Position) []uint16 {
+// but utf16 is selected if the server does not send it and is required for
+// backwards compatibility, so offsets here are utf16 code units.
+func WordEndUtf16(text string, pos types.Position) int {
 	lines := strings.Split(text, "\n")
-	if pos.Line < 0 || pos.Line >= len(lines) {
-		return nil
-	}
-	chars := utf16.Encode([]rune(lines[pos.Line]))
-	if pos.Character < 0 || pos.Character > len(chars) {
-		return nil
+	if pos.Line < 0 || pos.Line >= len(lines) || pos.Character < 0 {
+		return pos.Character
 	}
 
-	prevPos := 0
-	currPos := -1
-	prevCls := invalid
-	for i, char := range chars {
-		currCls := getRuneClass(rune(char))
-		if currCls != prevCls {
-			if i <= pos.Character {
-				prevPos = i
-			} else {
-				currPos = i
-				break
-			}
+	offset := 0
+	cls := classNone
+	for _, r := range lines[pos.Line] {
+		if offset < pos.Character {
+			offset += utf16.RuneLen(r)
+			continue
 		}
-		prevCls = currCls
+		c := classOf(r)
+		if cls == classNone {
+			cls = c
+		} else if c != cls {
+			break
+		}
+		offset += utf16.RuneLen(r)
 	}
-	if currPos == -1 {
-		currPos = len(chars)
-	}
-	return chars[prevPos:currPos]
+
+	// the loop never reaches pos if it points past the last character of the line
+	return max(offset, pos.Character)
 }
 
-func getRuneClass(r rune) int {
-	if r >= 0x100 {
-		return word
+func classOf(r rune) charClass {
+	switch {
+	case unicode.IsSpace(r):
+		return classBlank
+	// a mark belongs to the letter it follows, and underscore is punctuation to
+	// unicode but part of an identifier in every language a linter runs on
+	case r == '_' || unicode.IsLetter(r) || unicode.IsNumber(r) || unicode.IsMark(r):
+		return classWord
+	// everything else, operators and brackets included, separates words
+	default:
+		return classPunct
 	}
-	if unicode.IsSpace(r) || unicode.IsOneOf([]*unicode.RangeTable{unicode.Z, unicode.Pattern_White_Space}, r) {
-		return blank
-	}
-	if r == '_' || !unicode.IsPunct(r) {
-		return word
-	}
-	return punctuation
 }

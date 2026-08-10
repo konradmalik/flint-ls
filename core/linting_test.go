@@ -953,7 +953,10 @@ func TestParseEfmEntryToDiagnostic(t *testing.T) {
 				Severity: types.DiagError,
 				Range: types.Range{
 					Start: types.Position{Line: 0, Character: 7},
-					End:   types.Position{Line: 0, Character: 12},
+					// the offset pushed the start into the middle of the word, so
+					// the range covers what is left of it and stops at the end of
+					// the line
+					End: types.Position{Line: 0, Character: 11},
 				},
 			},
 		},

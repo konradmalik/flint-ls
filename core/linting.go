@@ -286,8 +286,7 @@ func parseEfmEntryToDiagnostic(entry *errorformat.Entry, config types.Language, 
 				colEnd = max(colEnd, colStart)
 			}
 		} else {
-			word := WordAtUtf16(f.Text, types.Position{Line: lineStart, Character: colStart})
-			colEnd = colStart + len(word)
+			colEnd = WordEndUtf16(f.Text, types.Position{Line: lineStart, Character: colStart})
 		}
 	}
 

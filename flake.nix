@@ -8,12 +8,6 @@
   outputs =
     { self, nixpkgs, ... }:
     let
-      nixpkgsFor =
-        system:
-        (import nixpkgs {
-          inherit system;
-          config.allowUnfree = true;
-        });
       forAllSystems =
         function:
         nixpkgs.lib.genAttrs [
@@ -21,7 +15,7 @@
           "aarch64-linux"
           "x86_64-darwin"
           "aarch64-darwin"
-        ] (system: function (nixpkgsFor system));
+        ] (system: function nixpkgs.legacyPackages.${system});
     in
     {
       devShells = forAllSystems (

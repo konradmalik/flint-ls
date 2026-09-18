@@ -124,9 +124,12 @@ func TestScheduleLintingDoesNotInheritFromARunThatStarted(t *testing.T) {
 	uri := newTestDocument(t, h, "a.txt")
 
 	h.ScheduleLinting(reporter, uri, types.EventTypeSave)
+	// the redirection creates the file before printf writes to it, so an empty
+	// file is not yet proof the run got going -- cancelling on it would kill the
+	// shell before it records itself, and the count below would be short a run
 	require.Eventually(t, func() bool {
-		_, err := os.Stat(started)
-		return err == nil
+		runs, err := os.ReadFile(started)
+		return err == nil && len(runs) > 0
 	}, 10*time.Second, time.Millisecond, "the linter never started")
 
 	// the run is past its debounce, so a keystroke now gets a plain change run --

@@ -80,8 +80,8 @@ func TestWordEndUtf16(t *testing.T) {
 // pos and ends where WordEndUtf16 says, clamped to the line the way a client
 // clamps a range it cannot resolve
 func highlighted(text string, pos types.Position) string {
-	end := WordEndUtf16(text, pos)
 	lines := strings.Split(text, "\n")
+	end := WordEndUtf16(lines, pos)
 	if pos.Line < 0 || pos.Line >= len(lines) {
 		return ""
 	}

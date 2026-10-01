@@ -19,10 +19,13 @@ import (
 // guarded by mu. Long running work must never hold mu: it takes a snapshot
 // first (see snapshot) and operates on that.
 type LangHandler struct {
-	mu       sync.RWMutex
-	configs  map[string][]types.Language
-	files    map[types.DocumentURI]*fileRef
-	rootPath string
+	mu      sync.RWMutex
+	configs map[string][]types.Language
+	// configGen counts the configurations replaced so far, which tells a lint run
+	// whether the one it resolved its linters from is still current.
+	configGen uint64
+	files     map[types.DocumentURI]*fileRef
+	rootPath  string
 	// formatClaims counts the formatting runs ever started, which hands each one
 	// a claim no other run anywhere has: see fileRef.formatClaim.
 	formatClaims uint64
@@ -61,9 +64,10 @@ type fileRef struct {
 // format run needs. It is copied out under LangHandler.mu so that concurrent
 // didChange/didClose notifications cannot mutate it mid-run.
 type documentSnapshot struct {
-	file     fileRef
-	configs  map[string][]types.Language
-	rootPath string
+	file      fileRef
+	configs   map[string][]types.Language
+	configGen uint64
+	rootPath  string
 }
 
 // ErrSuperseded reports that a result describes text the client no longer has:
@@ -131,7 +135,7 @@ func (h *LangHandler) snapshotLocked(f *fileRef) documentSnapshot {
 	// only ever read under mu, which a snapshot is for not needing
 	file.lintResults = nil
 
-	return documentSnapshot{file: file, configs: h.configs, rootPath: h.rootPath}
+	return documentSnapshot{file: file, configs: h.configs, configGen: h.configGen, rootPath: h.rootPath}
 }
 
 // NewHandler returns a handler for the given language configuration. Passing nil
@@ -201,6 +205,7 @@ func (h *LangHandler) UpdateConfiguration(config *types.Config) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	h.configs = config.Languages
+	h.configGen++
 	// the keys index into the configuration that was just replaced
 	for _, f := range h.files {
 		f.lintResults = nil

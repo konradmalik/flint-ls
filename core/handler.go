@@ -23,6 +23,9 @@ type LangHandler struct {
 	configs  map[string][]types.Language
 	files    map[types.DocumentURI]*fileRef
 	rootPath string
+	// formatClaims counts the formatting runs ever started, which hands each one
+	// a claim no other run anywhere has: see fileRef.formatClaim.
+	formatClaims uint64
 
 	// publishMu serialises storing a linter's result with publishing the set it
 	// belongs to, so the client receives the sets in the order they were built.
@@ -46,6 +49,12 @@ type fileRef struct {
 	// what that linter last said. Dropped with the document, and with the
 	// configuration that the keys index into.
 	lintResults map[linterKey][]types.Diagnostic
+	// formatClaim belongs to the newest formatting run of the document. Every
+	// edit set is a diff against the text its own run started from, so once a
+	// newer run has started an older one's edits would be applied to text the
+	// newer one's have already replaced. Claims are unique across documents, so a
+	// run that outlives its document cannot mistake the reopened one for its own.
+	formatClaim uint64
 }
 
 // documentSnapshot is a consistent, read-only view of everything a lint or
@@ -57,29 +66,47 @@ type documentSnapshot struct {
 	rootPath string
 }
 
-// ErrDocumentChanged reports that a document was edited while it was being
-// processed, which makes the result unusable: it describes a transformation of
-// text the client has already replaced. Only reachable from a client that does
-// not wait for the operation it asked for.
-var ErrDocumentChanged = errors.New("document changed while being processed")
+// ErrSuperseded reports that a result describes text the client no longer has:
+// the document was edited or closed while it was being processed, or a newer
+// request for it has taken over. Only reachable from a client that does not wait
+// for the operation it asked for.
+var ErrSuperseded = errors.New("superseded while being processed")
 
-// ensureUnchanged reports whether uri still holds the version that was read at
-// the start of an operation. A document that has been closed counts as changed:
-// either way the result describes text the client no longer has, and the caller
-// has nothing else to decide.
-func (h *LangHandler) ensureUnchanged(uri types.DocumentURI, version int) error {
+// ensureCurrent reports whether uri still holds the version a formatting run
+// started from, and whether that run is still the newest one for it. A document
+// that has been closed counts as changed: either way the result describes text
+// the client no longer has, and the caller has nothing else to decide.
+func (h *LangHandler) ensureCurrent(uri types.DocumentURI, version int, claim uint64) error {
 	h.mu.RLock()
 	defer h.mu.RUnlock()
 
 	f, ok := h.files[uri]
-	if !ok {
-		return fmt.Errorf("%w: %v was closed", ErrDocumentChanged, uri)
-	}
-	if f.Version != version {
-		return fmt.Errorf("%w: %v moved from version %d to %d", ErrDocumentChanged, uri, version, f.Version)
+	switch {
+	case !ok:
+		return fmt.Errorf("%w: %v was closed", ErrSuperseded, uri)
+	case f.Version != version:
+		return fmt.Errorf("%w: %v moved from version %d to %d", ErrSuperseded, uri, version, f.Version)
+	case f.formatClaim != claim:
+		return fmt.Errorf("%w: a newer formatting request for %v", ErrSuperseded, uri)
 	}
 
 	return nil
+}
+
+// claimFormatting makes the caller the newest formatting run of uri and returns
+// the snapshot it is to work from along with its claim.
+func (h *LangHandler) claimFormatting(uri types.DocumentURI) (documentSnapshot, uint64, error) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	f, ok := h.files[uri]
+	if !ok {
+		return documentSnapshot{}, 0, fmt.Errorf("document not found: %v", uri)
+	}
+	h.formatClaims++
+	f.formatClaim = h.formatClaims
+
+	return h.snapshotLocked(f), f.formatClaim, nil
 }
 
 // snapshot copies the state needed to process uri.
@@ -96,11 +123,15 @@ func (h *LangHandler) snapshot(uri types.DocumentURI) (documentSnapshot, error) 
 		return documentSnapshot{}, fmt.Errorf("document not found: %v", uri)
 	}
 
+	return h.snapshotLocked(f), nil
+}
+
+func (h *LangHandler) snapshotLocked(f *fileRef) documentSnapshot {
 	file := *f
 	// only ever read under mu, which a snapshot is for not needing
 	file.lintResults = nil
 
-	return documentSnapshot{file: file, configs: h.configs, rootPath: h.rootPath}, nil
+	return documentSnapshot{file: file, configs: h.configs, rootPath: h.rootPath}
 }
 
 // NewHandler returns a handler for the given language configuration. Passing nil

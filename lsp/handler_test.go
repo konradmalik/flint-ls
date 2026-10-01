@@ -9,7 +9,6 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
-	"slices"
 	"sync"
 	"testing"
 	"time"
@@ -268,7 +267,6 @@ func TestFormattingDropsSupersededRequests(t *testing.T) {
 	// meaningful, however the runs themselves interleaved
 	assert.Equal(t, 1, formatted, "only the newest request should have answered with edits")
 	assert.Equal(t, requests, formatted+superseded, "every request must get an answer")
-	assert.Empty(t, h.pendingFormats(), "the entries must not outlive the burst")
 }
 
 // TestFormattingSupersedesARunThatAlreadyStarted covers the case an async client
@@ -285,11 +283,17 @@ func TestFormattingSupersedesARunThatAlreadyStarted(t *testing.T) {
 	started := filepath.Join(dir, "started")
 	release := filepath.Join(dir, "release")
 
-	// announces that it is running, then waits to be let go
+	// announces that it is running, once per run, then waits to be let go
 	format := fmt.Sprintf(
-		`printf x > %[1]s; n=500; `+
+		`printf x >> %[1]s; n=500; `+
 			`while [ ! -f %[2]s ] && [ "$n" -gt 0 ]; do sleep 0.01; n=$((n-1)); done; tr a-z A-Z`,
 		started, release)
+	runsStarted := func(n int) func() bool {
+		return func() bool {
+			b, err := os.ReadFile(started)
+			return err == nil && len(b) >= n
+		}
+	}
 
 	h := newTestHandlerWithLanguage(t, neverFires, types.Language{FormatCommand: format})
 	uri := newTestDocument(t, h, "a.txt")
@@ -306,22 +310,15 @@ func TestFormattingSupersedesARunThatAlreadyStarted(t *testing.T) {
 
 	// wait until the first request is inside the formatter, which is what puts it
 	// past the point where it could have given up before doing the work
-	require.Eventually(t, func() bool {
-		_, err := os.Stat(started)
-		return err == nil
-	}, 10*time.Second, time.Millisecond, "the formatter never started")
-
-	firstReq := h.newestFormatRequest(uri)
-	require.NotNil(t, firstReq, "the running request should be the newest one")
+	require.Eventually(t, runsStarted(1), 10*time.Second, time.Millisecond, "the formatter never started")
 
 	second := make(chan outcome, 1)
 	go func() {
 		edits, err := h.Formatting(t.Context(), &fakeReporter{}, uri, nil, types.FormattingOptions{})
 		second <- outcome{edits, err}
 	}()
-	require.Eventually(t, func() bool {
-		return h.newestFormatRequest(uri) != firstReq
-	}, 10*time.Second, time.Millisecond, "the second request never registered")
+	// a request claims the document before it starts its formatter
+	require.Eventually(t, runsStarted(2), 10*time.Second, time.Millisecond, "the second request never started")
 
 	require.NoError(t, os.WriteFile(release, nil, 0o600))
 
@@ -436,20 +433,6 @@ func TestFormattingServesSequentialRequests(t *testing.T) {
 		require.NoError(t, err)
 		assert.NotEmpty(t, edits)
 	}
-
-	assert.Empty(t, h.pendingFormats())
-}
-
-func TestForgetDocumentDropsInFlightFormatting(t *testing.T) {
-	h := newTestHandler(t, neverFires)
-	uri := newTestDocument(t, h, "a.txt")
-
-	req := h.claimFormatting(uri)
-	h.ForgetDocument(uri)
-
-	assert.False(t, h.finishFormatting(req),
-		"formatting a document that was closed cannot produce anything useful")
-	assert.Empty(t, h.pendingFormats())
 }
 
 func TestHandleRejectsRequestsAfterShutdown(t *testing.T) {
@@ -672,23 +655,6 @@ func (h *LspHandler) currentLintJob(t *testing.T, uri types.DocumentURI) *lintJo
 	require.True(t, ok, "no lint job for %v", uri)
 
 	return job
-}
-
-// pendingFormats lists the documents with formatting outstanding.
-func (h *LspHandler) pendingFormats() []types.DocumentURI {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-
-	return slices.Collect(maps.Keys(h.formats))
-}
-
-// newestFormatRequest returns the request the handler currently considers newest
-// for uri, or nil if none is outstanding.
-func (h *LspHandler) newestFormatRequest(uri types.DocumentURI) *formatRequest {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-
-	return h.formats[uri]
 }
 
 func newTestHandler(t *testing.T, debounce time.Duration) *LspHandler {

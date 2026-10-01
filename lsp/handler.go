@@ -35,10 +35,6 @@ type LspHandler struct {
 	mu           sync.Mutex
 	lintDebounce time.Duration
 	lints        map[types.DocumentURI]*lintJob
-	// formats holds the newest formatting request per document, identified by
-	// pointer. A run whose request is no longer the one in the table has been
-	// superseded.
-	formats map[types.DocumentURI]*formatRequest
 	// progressSupported is what the client said about work-done progress in
 	// initialize. Until then nothing is reported, which is the safe assumption.
 	progressSupported bool
@@ -76,21 +72,11 @@ type lintJob struct {
 	running atomic.Bool
 }
 
-// formatRequest represents one in-flight formatting request. It is compared by
-// pointer, which is what tells a finished run whether a newer request has
-// arrived for its document. It carries uri so that it is not zero-sized:
-// pointers to distinct zero-size variables may compare equal, which would make
-// every request look like every other.
-type formatRequest struct {
-	uri types.DocumentURI
-}
-
 func NewHandler(langHandler *core.LangHandler) *LspHandler {
 	return &LspHandler{
 		langHandler:  langHandler,
 		lintDebounce: defaultLintDebounce,
 		lints:        make(map[types.DocumentURI]*lintJob),
-		formats:      make(map[types.DocumentURI]*formatRequest),
 	}
 }
 
@@ -144,66 +130,20 @@ func (h *LspHandler) Handle(ctx context.Context, conn *jsonrpc2.Conn, req *jsonr
 // bring the document to its formatted state.
 //
 // Requests run concurrently, including several for the same document, but only
-// the newest request for a document answers with edits. Every edit set is a diff
-// against the text its own run started from, so a client that applied two of
-// them would apply the second against text the first has already replaced.
-// Saying so with an error keeps the client honest -- answering with an empty edit
-// list would instead claim the document needs no changes.
+// the newest request for a document on its current text answers with edits; see
+// core.ErrSuperseded. Saying so with an error keeps the client honest --
+// answering with an empty edit list would instead claim the document needs no
+// changes.
 func (h *LspHandler) Formatting(ctx context.Context, reporter core.Reporter, uri types.DocumentURI, rng *types.Range, opt types.FormattingOptions) ([]types.TextEdit, error) {
-	req := h.claimFormatting(uri)
-
 	edits, err := h.langHandler.RunAllFormatters(ctx, reporter, uri, rng, opt)
-
-	// asked after the run rather than before it, because a request that has
-	// already started is precisely the one whose edits would otherwise reach the
-	// client after a newer request superseded them
-	current := h.finishFormatting(req)
-
-	switch {
-	case errors.Is(err, core.ErrDocumentChanged):
-		// the same answer as a superseded request: the client should disregard
-		// this response, not treat it as a formatter failure
-		logs.Log.Logf(logs.Debug, "format for %v raced an edit", uri)
+	if errors.Is(err, core.ErrSuperseded) {
+		// the client should disregard this response, not treat it as a
+		// formatter failure
+		logs.Log.Logf(logs.Debug, "format for %v: %v", uri, err)
 		return nil, &jsonrpc2.Error{Code: codeContentModified, Message: err.Error()}
-	case err != nil:
-		return nil, err
-	case !current:
-		logs.Log.Logf(logs.Debug, "format for %v superseded", uri)
-		return nil, &jsonrpc2.Error{Code: codeContentModified, Message: "superseded by a newer formatting request"}
 	}
 
-	return edits, nil
-}
-
-// claimFormatting records this request as the newest one for uri.
-func (h *LspHandler) claimFormatting(uri types.DocumentURI) *formatRequest {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-
-	req := &formatRequest{uri: uri}
-	h.formats[uri] = req
-
-	return req
-}
-
-// finishFormatting reports whether req is still the newest request for its
-// document, and forgets the document if it is, so the map holds only documents
-// being formatted right now.
-//
-// A request that finds a different pointer has been superseded, and one whose
-// entry is gone has been abandoned -- the document was closed or the server shut
-// down. Either way the edits it computed describe text nobody is waiting for, and
-// the entry it would drop belongs to somebody else.
-func (h *LspHandler) finishFormatting(req *formatRequest) bool {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-
-	if h.formats[req.uri] != req {
-		return false
-	}
-	delete(h.formats, req.uri)
-
-	return true
+	return edits, err
 }
 
 // ScheduleLinting queues a lint run for uri. Runs are debounced per document:
@@ -267,8 +207,8 @@ func (h *LspHandler) ScheduleLinting(reporter core.Reporter, uri types.DocumentU
 }
 
 // ForgetDocument drops everything scheduled for uri. Used when a document is
-// closed: its diagnostics are no longer wanted, and a formatting run still going
-// for it can no longer produce anything useful.
+// closed: its diagnostics are no longer wanted. A formatting run still going for
+// it finds the document gone and gives up on its own.
 func (h *LspHandler) ForgetDocument(uri types.DocumentURI) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -277,8 +217,6 @@ func (h *LspHandler) ForgetDocument(uri types.DocumentURI) {
 		job.cancel()
 		delete(h.lints, uri)
 	}
-	// a run still formatting this document finds its entry gone and gives up
-	delete(h.formats, uri)
 }
 
 // finishLinting releases the run's context and forgets the document unless a
@@ -325,7 +263,4 @@ func (h *LspHandler) Close() {
 		job.cancel()
 	}
 	clear(h.lints)
-	// runs still formatting find their entry gone, so they report themselves
-	// superseded and discard their edits
-	clear(h.formats)
 }

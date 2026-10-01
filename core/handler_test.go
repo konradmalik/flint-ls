@@ -277,18 +277,45 @@ func TestMatchRootPath(t *testing.T) {
 	}
 }
 
-func TestEnsureUnchanged(t *testing.T) {
+func TestEnsureCurrent(t *testing.T) {
 	uri := types.DocumentURI("file:///a.txt")
 	h := &LangHandler{files: map[types.DocumentURI]*fileRef{uri: {Version: 7}}}
 
-	assert.NoError(t, h.ensureUnchanged(uri, 7))
+	_, claim, err := h.claimFormatting(uri)
+	require.NoError(t, err)
+	assert.NoError(t, h.ensureCurrent(uri, 7, claim))
 
-	assert.ErrorIs(t, h.ensureUnchanged(uri, 6), ErrDocumentChanged,
+	assert.ErrorIs(t, h.ensureCurrent(uri, 6, claim), ErrSuperseded,
 		"a different version means the result is stale")
 
+	_, newer, err := h.claimFormatting(uri)
+	require.NoError(t, err)
+	assert.ErrorIs(t, h.ensureCurrent(uri, 7, claim), ErrSuperseded,
+		"a newer request's edits are the ones the client should apply")
+	assert.NoError(t, h.ensureCurrent(uri, 7, newer))
+
 	// closed and edited are the same answer to the caller: the result is unusable
-	assert.ErrorIs(t, h.ensureUnchanged("file:///gone.txt", 7), ErrDocumentChanged,
+	assert.ErrorIs(t, h.ensureCurrent("file:///gone.txt", 7, claim), ErrSuperseded,
 		"a document that went away cannot be the one that was processed")
+}
+
+// TestFormatClaimDoesNotSurviveReopen covers a run that outlives its document: the
+// document is closed and opened again, at the same version, and formatted anew.
+// The old run must not take the new document for the one it started on.
+func TestFormatClaimDoesNotSurviveReopen(t *testing.T) {
+	uri := types.DocumentURI("file:///a.txt")
+	h := NewHandler(nil)
+	require.NoError(t, h.OpenFile(uri, "text", 1, "a\n"))
+
+	_, old, err := h.claimFormatting(uri)
+	require.NoError(t, err)
+
+	h.CloseFile(uri)
+	require.NoError(t, h.OpenFile(uri, "text", 1, "a\n"))
+	_, _, err = h.claimFormatting(uri)
+	require.NoError(t, err)
+
+	assert.ErrorIs(t, h.ensureCurrent(uri, 1, old), ErrSuperseded)
 }
 
 // TestConcurrentDocumentSyncWhileLinting covers the overlap the server lives

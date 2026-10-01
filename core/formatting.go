@@ -26,7 +26,7 @@ var (
 func (h *LangHandler) RunAllFormatters(
 	ctx context.Context, reporter Reporter, uri types.DocumentURI, rng *types.Range,
 	options types.FormattingOptions) ([]types.TextEdit, error) {
-	snap, err := h.snapshot(uri)
+	snap, claim, err := h.claimFormatting(uri)
 	if err != nil {
 		return nil, err
 	}
@@ -73,11 +73,13 @@ func (h *LangHandler) RunAllFormatters(
 	}
 
 	// the edits below are a diff against the text the formatters started from, so
-	// they only apply cleanly to a document that has not moved since. a client
-	// that formats synchronously blocks input and cannot get here; one that
-	// formats asynchronously can, and applying a stale diff there would corrupt
-	// the document. a version comparison is cheap enough to do regardless.
-	if err := h.ensureUnchanged(uri, f.Version); err != nil {
+	// they only apply cleanly to a document that has not moved since, and only if
+	// no newer request's edits get applied first. asked after the run rather than
+	// before it, because a run that has already started is precisely the one a
+	// newer request supersedes. a client that formats synchronously cannot get
+	// here; one that formats asynchronously can, and applying a stale diff there
+	// would corrupt the document.
+	if err := h.ensureCurrent(uri, f.Version, claim); err != nil {
 		return nil, err
 	}
 

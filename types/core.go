@@ -34,9 +34,11 @@ type Language struct {
 	// defaults to true if not provided as a sanity default
 	LintOnChange *bool `json:"lintOnChange,omitempty"`
 	// defaults to true if not provided as a sanity default
-	LintOnSave     *bool  `json:"lintOnSave,omitempty"`
-	FormatCommand  string `json:"formatCommand,omitempty"`
-	FormatCanRange bool   `json:"formatCanRange,omitempty"`
+	LintOnSave    *bool  `json:"lintOnSave,omitempty"`
+	FormatCommand string `json:"formatCommand,omitempty"`
+	// whether formatCommand can format a range; only such formatters run for a
+	// range formatting request
+	FormatCanRange bool `json:"formatCanRange,omitempty"`
 }
 
 // EventType is a set of the document events a lint run covers. It is a set

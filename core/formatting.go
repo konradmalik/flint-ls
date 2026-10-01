@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"maps"
 	"os/exec"
 	"regexp"
 	"strings"
@@ -145,33 +146,41 @@ func applyOptionsPlaceholders(command string, options map[string]any) string {
 	return strings.TrimSpace(command)
 }
 
-func applyRangePlaceholders(command string, rng *types.Range, text string) string {
+// rangeValues are the values a ranged format fills option placeholders with.
+func rangeValues(rng *types.Range, text string) map[string]any {
 	lines := strings.Split(text, "\n")
-	charStart := convertRowColToIndex(lines, rng.Start.Line, rng.Start.Character)
-	charEnd := convertRowColToIndex(lines, rng.End.Line, rng.End.Character)
 
-	rangeOptions := map[string]any{
-		"charStart": charStart,
-		"charEnd":   charEnd,
+	return map[string]any{
+		"charStart": convertRowColToIndex(lines, rng.Start.Line, rng.Start.Character),
+		"charEnd":   convertRowColToIndex(lines, rng.End.Line, rng.End.Character),
 		"rowStart":  rng.Start.Line,
 		"colStart":  rng.Start.Character,
 		"rowEnd":    rng.End.Line,
 		"colEnd":    rng.End.Character,
 	}
-
-	return applyOptionsPlaceholders(command, rangeOptions)
 }
 
+// buildFormatCommandString fills in every placeholder of command. The paths go
+// in last: filled in first, a filename holding something that looks like a
+// placeholder would be filled in as one.
 func buildFormatCommandString(rootPath string, filename string, textToFormat string, options types.FormattingOptions, rng *types.Range, command string) string {
-	command = replaceMagicStrings(command, filename, rootPath)
-	command = applyOptionsPlaceholders(command, options)
-
+	values := make(map[string]any, len(options))
+	maps.Copy(values, options)
 	if rng != nil {
-		command = applyRangePlaceholders(command, rng, textToFormat)
+		maps.Copy(values, rangeValues(rng, textToFormat))
 	}
+	command = applyOptionsPlaceholders(command, values)
 
-	// whatever is left is a placeholder the client gave no value for
-	return reUnfilledPlaceholders.ReplaceAllString(command, "")
+	// whatever is left is a placeholder the client gave no value for, apart from
+	// the paths that have yet to go in
+	command = reUnfilledPlaceholders.ReplaceAllStringFunc(command, func(placeholder string) string {
+		if isPathPlaceholder(placeholder) {
+			return placeholder
+		}
+		return ""
+	})
+
+	return replaceMagicStrings(command, filename, rootPath)
 }
 
 func runFormattingCommand(cmd *exec.Cmd) (string, error) {

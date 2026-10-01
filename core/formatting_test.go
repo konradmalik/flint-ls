@@ -76,9 +76,22 @@ func TestApplyRangePlaceholders(t *testing.T) {
 		End:   types.Position{Line: 0, Character: 4},
 	}
 	text := "abcdef"
-	out := applyRangePlaceholders(cmd, rng, text)
+	out := buildFormatCommandString("/root", "/root/file.txt", text, nil, rng, cmd)
 	assert.Contains(t, out, "--flag 2")
 	assert.Contains(t, out, "--flag=4")
+}
+
+// TestBuildCommandLeavesPlaceholdersInFilenamesAlone covers a filename that
+// happens to look like a placeholder. It is a name to pass along, not part of
+// the command to fill in.
+func TestBuildCommandLeavesPlaceholdersInFilenamesAlone(t *testing.T) {
+	opts := types.FormattingOptions{"tabSize": 2}
+	rng := &types.Range{End: types.Position{Character: 1}}
+
+	cmdStr := buildFormatCommandString("/root", "/root/${--x:tabSize}${--y:charEnd}${junk}.js", "text", opts, rng,
+		"fmt ${--indent:tabSize} ${INPUT}")
+
+	assert.Equal(t, "fmt --indent 2 '/root/${--x:tabSize}${--y:charEnd}${junk}.js'", cmdStr)
 }
 
 func TestBuildCommandHandlesPlaceholders(t *testing.T) {

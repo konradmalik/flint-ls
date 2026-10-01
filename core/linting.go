@@ -6,8 +6,10 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 
@@ -35,13 +37,6 @@ func (h *LangHandler) RunAllLinters(ctx context.Context, reporter Reporter, uri 
 		return nil
 	}
 
-	// to reset existing
-	reporter.PublishDiagnostics(ctx, types.PublishDiagnosticsParams{
-		URI:         uri,
-		Diagnostics: make([]types.Diagnostic, 0),
-		Version:     f.Version,
-	})
-
 	progressToken := types.NewProgressToken()
 	reporter.Progress(ctx, types.ProgressParams{
 		Token: progressToken,
@@ -54,14 +49,6 @@ func (h *LangHandler) RunAllLinters(ctx context.Context, reporter Reporter, uri 
 		Value: types.NewWorkDoneProgressEnd(nil),
 	})
 
-	// every publish replaces the client's whole set for the document, so each
-	// linter reports the union of what has finished so far rather than only its
-	// own findings -- otherwise the linters would erase each other. mu is held
-	// across the publish as well, which keeps the sets the client sees growing
-	// monotonically instead of letting a smaller one overtake a larger one.
-	var mu sync.Mutex
-	published := make([]types.Diagnostic, 0)
-
 	var wg sync.WaitGroup
 	for _, config := range configs {
 		wg.Go(func() {
@@ -69,24 +56,30 @@ func (h *LangHandler) RunAllLinters(ctx context.Context, reporter Reporter, uri 
 			if err != nil {
 				logs.Log.Logln(logs.Error, err.Error())
 				reporter.ReportError(ctx, err)
-				return
+				// what it said last time is about text that has changed since,
+				// and it has nothing to replace that with
+				diagnostics = nil
 			}
 
+			h.publishMu.Lock()
+			defer h.publishMu.Unlock()
+
 			// a cancelled run's results describe text the client has already
-			// replaced. it publishes nothing rather than an empty set: killing the
-			// linter left it with no diagnostics to report, and sending those would
-			// wipe out whatever the run that superseded this one has published
+			// replaced, and killing the linter left it with nothing to report
+			// anyway. asked under publishMu: the run that superseded this one
+			// cancelled it before starting, so once this says no, nothing this
+			// run stores can land after what its successor stores
 			if ctx.Err() != nil {
 				return
 			}
 
-			mu.Lock()
-			defer mu.Unlock()
-
-			published = append(published, diagnostics...)
+			all, ok := h.storeLintResult(uri, config.key, diagnostics)
+			if !ok {
+				return
+			}
 			reporter.PublishDiagnostics(ctx, types.PublishDiagnosticsParams{
 				URI:         uri,
-				Diagnostics: published,
+				Diagnostics: all,
 				Version:     f.Version,
 			})
 		})
@@ -95,6 +88,31 @@ func (h *LangHandler) RunAllLinters(ctx context.Context, reporter Reporter, uri 
 	wg.Wait()
 
 	return nil
+}
+
+// storeLintResult records the latest diagnostics of one linter and returns the
+// union over every linter that has reported for uri, in config order so the
+// client sees a stable list. It reports false for a document that has been closed
+// since, which nobody wants diagnostics for any more.
+func (h *LangHandler) storeLintResult(uri types.DocumentURI, key linterKey, diagnostics []types.Diagnostic) ([]types.Diagnostic, bool) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	f, ok := h.files[uri]
+	if !ok {
+		return nil, false
+	}
+	if f.lintResults == nil {
+		f.lintResults = make(map[linterKey][]types.Diagnostic)
+	}
+	f.lintResults[key] = diagnostics
+
+	all := make([]types.Diagnostic, 0)
+	for _, k := range slices.Sorted(maps.Keys(f.lintResults)) {
+		all = append(all, f.lintResults[k]...)
+	}
+
+	return all, true
 }
 
 func lintDocument(ctx context.Context, rootPath string, f fileRef, config types.Language) ([]types.Diagnostic, error) {

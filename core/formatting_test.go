@@ -81,6 +81,33 @@ func TestApplyRangePlaceholders(t *testing.T) {
 	assert.Contains(t, out, "--flag=4")
 }
 
+func TestByteOffset(t *testing.T) {
+	// ą is 2 bytes and 1 utf16 unit, 😊 is 4 bytes and 2 utf16 units
+	lines := strings.Split("ąb😊c\nxyz\n", "\n")
+
+	tests := []struct {
+		name string
+		pos  types.Position
+		want int
+	}{
+		{"start", types.Position{Line: 0, Character: 0}, 0},
+		{"after a two byte rune", types.Position{Line: 0, Character: 1}, 2},
+		{"after a surrogate pair", types.Position{Line: 0, Character: 4}, 7},
+		{"end of line", types.Position{Line: 0, Character: 5}, 8},
+		{"past end of line", types.Position{Line: 0, Character: 99}, 8},
+		{"second line counts the first in bytes", types.Position{Line: 1, Character: 1}, 10},
+		{"empty last line", types.Position{Line: 2, Character: 0}, 13},
+		{"past last line", types.Position{Line: 9, Character: 0}, 13},
+		{"negative", types.Position{Line: -1, Character: -1}, 0},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, byteOffset(lines, tt.pos))
+		})
+	}
+}
+
 // TestBuildCommandLeavesPlaceholdersInFilenamesAlone covers a filename that
 // happens to look like a placeholder. It is a name to pass along, not part of
 // the command to fill in.

@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"regexp"
 	"strings"
+	"unicode/utf16"
 
 	"github.com/konradmalik/flint-ls/logs"
 	"github.com/konradmalik/flint-ls/types"
@@ -151,8 +152,8 @@ func rangeValues(rng *types.Range, text string) map[string]any {
 	lines := strings.Split(text, "\n")
 
 	return map[string]any{
-		"charStart": convertRowColToIndex(lines, rng.Start.Line, rng.Start.Character),
-		"charEnd":   convertRowColToIndex(lines, rng.End.Line, rng.End.Character),
+		"charStart": byteOffset(lines, rng.Start),
+		"charEnd":   byteOffset(lines, rng.End),
 		"rowStart":  rng.Start.Line,
 		"colStart":  rng.Start.Character,
 		"rowEnd":    rng.End.Line,
@@ -193,19 +194,30 @@ func runFormattingCommand(cmd *exec.Cmd) (string, error) {
 	return string(b), nil
 }
 
-func convertRowColToIndex(lines []string, row, col int) int {
-	row = max(row, 0)
-	row = min(row, len(lines)-1)
-
-	col = max(col, 0)
-	col = min(col, len(lines[row]))
+// byteOffset converts an lsp position into an offset into the text the lines
+// were split from, counted in bytes. Positions outside the text are clamped to it.
+//
+// Bytes because the formatters that take an offset do not agree on its unit --
+// stylua counts bytes, prettier utf16 units -- and bytes is what this always
+// counted for every line before the one the position is on. efm-langserver
+// counted the column on that line in utf16 units, which was right for no tool.
+func byteOffset(lines []string, pos types.Position) int {
+	row := min(max(pos.Line, 0), len(lines)-1)
 
 	index := 0
-	for i := 0; i < row; i++ {
-		// Add the length of each line plus 1 for the newline character
-		index += len(lines[i]) + 1
+	for _, line := range lines[:row] {
+		// plus the newline the split removed
+		index += len(line) + 1
 	}
-	index += col
 
-	return index
+	// pos.Character counts utf16 units, which the line has to be walked to convert
+	units := 0
+	for i, r := range lines[row] {
+		if units >= pos.Character {
+			return index + i
+		}
+		units += utf16.RuneLen(r)
+	}
+
+	return index + len(lines[row])
 }

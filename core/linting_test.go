@@ -1193,3 +1193,66 @@ func (r *recordingReporter) errorMessages() []string {
 	}
 	return messages
 }
+
+// TestCancelledRunReportsNoError covers a run superseded just as its linter was
+// about to start. Starting a command whose context is done fails, and that
+// failure is the cancellation, not something to show the user.
+func TestCancelledRunReportsNoError(t *testing.T) {
+	h, uri := newTwoLinterHandler(t)
+
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+
+	reporter := &recordingReporter{}
+	require.NoError(t, h.RunAllLinters(ctx, reporter, uri, types.EventTypeChange))
+
+	assert.Empty(t, reporter.errorMessages())
+	assert.Empty(t, reporter.publishedDiagnostics())
+}
+
+// TestRunOfReplacedConfigurationStoresNothing covers a run that outlives the
+// configuration it resolved its linters from. Results are keyed by a linter's
+// position in the configuration, so storing them would credit them to whatever
+// linter holds that position now -- where nothing would ever clear them.
+func TestRunOfReplacedConfigurationStoresNothing(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the lint command below is written as a POSIX shell command")
+	}
+
+	dir := t.TempDir()
+	started := filepath.Join(dir, "started")
+	release := filepath.Join(dir, "release")
+
+	// announces that it is running, then waits to be let go
+	slow := fmt.Sprintf(
+		`printf x > %[1]s; n=500; `+
+			`while [ ! -f %[2]s ] && [ "$n" -gt 0 ]; do sleep 0.01; n=$((n-1)); done; echo 1:old`,
+		started, release)
+	h := NewHandler(map[string][]types.Language{"vim": {
+		{LintCommand: slow, LintFormats: []string{"%l:%m"}, LintStdin: true, LintIgnoreExitCode: true},
+	}})
+	uri := ParseLocalFileToURI(filepath.Join(dir, "a.vim"))
+	require.NoError(t, h.OpenFile(uri, "vim", 1, "x\n"))
+
+	done := make(chan error, 1)
+	go func() { done <- h.RunAllLinters(t.Context(), &recordingReporter{}, uri, types.EventTypeChange) }()
+	require.Eventually(t, func() bool {
+		_, err := os.Stat(started)
+		return err == nil
+	}, 10*time.Second, time.Millisecond, "the linter never started")
+
+	// the old linter's position now belongs to a save-only linter, which a
+	// keystroke does not run and so would never overwrite
+	onSaveOnly := false
+	h.UpdateConfiguration(&types.Config{Languages: map[string][]types.Language{"vim": {
+		{LintCommand: "echo 1:on save", LintFormats: []string{"%l:%m"}, LintStdin: true, LintIgnoreExitCode: true, LintOnChange: &onSaveOnly},
+		{LintCommand: "echo 1:on change", LintFormats: []string{"%l:%m"}, LintStdin: true, LintIgnoreExitCode: true},
+	}}})
+	require.NoError(t, os.WriteFile(release, nil, 0o600))
+	require.NoError(t, <-done)
+
+	pd, err := h.getAllPublishDiagnosticsParamsForUriWithEvent(t, uri, types.EventTypeChange)
+	require.NoError(t, err)
+	require.Len(t, pd, 1)
+	assert.Equal(t, []string{"on change"}, diagnosticMessages(pd[0].Diagnostics))
+}

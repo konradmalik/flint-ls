@@ -53,6 +53,19 @@ func (h *LangHandler) RunAllLinters(ctx context.Context, reporter Reporter, uri 
 	for _, config := range configs {
 		wg.Go(func() {
 			diagnostics, err := lintDocument(ctx, config.rootPath, f, config.Language)
+
+			h.publishMu.Lock()
+			defer h.publishMu.Unlock()
+
+			// a cancelled run's results describe text the client has already
+			// replaced, and its errors are only the cancellation itself. asked
+			// under publishMu: the run that superseded this one cancelled it
+			// before starting, so once this says no, nothing this run stores can
+			// land after what its successor stores
+			if ctx.Err() != nil {
+				return
+			}
+
 			if err != nil {
 				logs.Log.Logln(logs.Error, err.Error())
 				reporter.ReportError(ctx, err)
@@ -61,19 +74,7 @@ func (h *LangHandler) RunAllLinters(ctx context.Context, reporter Reporter, uri 
 				diagnostics = nil
 			}
 
-			h.publishMu.Lock()
-			defer h.publishMu.Unlock()
-
-			// a cancelled run's results describe text the client has already
-			// replaced, and killing the linter left it with nothing to report
-			// anyway. asked under publishMu: the run that superseded this one
-			// cancelled it before starting, so once this says no, nothing this
-			// run stores can land after what its successor stores
-			if ctx.Err() != nil {
-				return
-			}
-
-			all, ok := h.storeLintResult(uri, config.key, diagnostics)
+			all, ok := h.storeLintResult(uri, snap.configGen, config.key, diagnostics)
 			if !ok {
 				return
 			}
@@ -92,14 +93,15 @@ func (h *LangHandler) RunAllLinters(ctx context.Context, reporter Reporter, uri 
 
 // storeLintResult records the latest diagnostics of one linter and returns the
 // union over every linter that has reported for uri, in config order so the
-// client sees a stable list. It reports false for a document that has been closed
-// since, which nobody wants diagnostics for any more.
-func (h *LangHandler) storeLintResult(uri types.DocumentURI, key linterKey, diagnostics []types.Diagnostic) ([]types.Diagnostic, bool) {
+// client sees a stable list. It reports false for a document that has been
+// closed since, which nobody wants diagnostics for any more, and for a run of a
+// configuration that has been replaced since, whose keys mean other linters now.
+func (h *LangHandler) storeLintResult(uri types.DocumentURI, configGen uint64, key linterKey, diagnostics []types.Diagnostic) ([]types.Diagnostic, bool) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 
 	f, ok := h.files[uri]
-	if !ok {
+	if !ok || configGen != h.configGen {
 		return nil, false
 	}
 	if f.lintResults == nil {

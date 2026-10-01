@@ -199,7 +199,9 @@ func (h *LspHandler) ScheduleLinting(reporter core.Reporter, uri types.DocumentU
 
 		job.running.Store(true)
 
-		if err := h.langHandler.RunAllLinters(ctx, reporter, uri, job.events); err != nil {
+		// a superseded run fails for being superseded -- its document closed, say --
+		// which is nothing to tell the user about
+		if err := h.langHandler.RunAllLinters(ctx, reporter, uri, job.events); err != nil && ctx.Err() == nil {
 			logs.Log.Logln(logs.Error, err.Error())
 			reporter.ReportError(ctx, err)
 		}

@@ -29,9 +29,13 @@ func (h *LangHandler) RunAllFormatters(
 	}
 	f := snap.file
 
-	configs := snap.resolveConfigs(func(cfg types.Language) bool { return cfg.FormatCommand != "" })
+	// a formatter that cannot format a range would format the whole document
+	// when asked for a few lines of it
+	configs := snap.resolveConfigs(func(cfg types.Language) bool {
+		return cfg.FormatCommand != "" && (rng == nil || cfg.FormatCanRange)
+	})
 	if len(configs) == 0 {
-		logs.Log.Logf(logs.Warn, "no matching format configs for LanguageID: %v", f.LanguageID)
+		logs.Log.Logf(logs.Warn, "no matching format configs for LanguageID: %v (range: %t)", f.LanguageID, rng != nil)
 		return nil, nil
 	}
 

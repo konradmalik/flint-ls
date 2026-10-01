@@ -278,6 +278,41 @@ func TestRunFormattersSkipsAFailingFormatter(t *testing.T) {
 	assert.Contains(t, err.Error(), "broken config")
 }
 
+// TestRangeFormattingSkipsFormattersThatCannotRange covers a range request on a
+// document with a formatter that only formats whole documents. Run anyway, it
+// would reformat everything when the user selected a few lines.
+func TestRangeFormattingSkipsFormattersThatCannotRange(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the format commands below are written as POSIX shell commands")
+	}
+
+	testfile := filepath.Join(t.TempDir(), "text.txt")
+	uri := ParseLocalFileToURI(testfile)
+	wholeDocument := types.Language{FormatCommand: "tr a-z A-Z"}
+	rng := &types.Range{End: types.Position{Line: 1}}
+
+	h := NewHandler(map[string][]types.Language{"go": {
+		wholeDocument,
+		{FormatCommand: "sed 's/$/!/'", FormatCanRange: true},
+	}})
+	require.NoError(t, h.OpenFile(uri, "go", 1, "hello\n"))
+
+	edits, err := h.RunAllFormatters(t.Context(), &recordingReporter{}, uri, rng, nil)
+	require.NoError(t, err)
+	require.Len(t, edits, 1)
+	assert.Equal(t, "hello!\n", edits[0].NewText, "only the range formatter may run")
+
+	edits, err = h.runAllFormatters(t, uri)
+	require.NoError(t, err)
+	require.Len(t, edits, 1)
+	assert.Equal(t, "HELLO!\n", edits[0].NewText, "a whole document request runs both")
+
+	h.UpdateConfiguration(&types.Config{Languages: map[string][]types.Language{"go": {wholeDocument}}})
+	edits, err = h.RunAllFormatters(t.Context(), &recordingReporter{}, uri, rng, nil)
+	require.NoError(t, err)
+	assert.Empty(t, edits, "with no range formatter a range request changes nothing")
+}
+
 func (h *LangHandler) runAllFormatters(t *testing.T, uri types.DocumentURI) ([]types.TextEdit, error) {
 	return h.RunAllFormatters(t.Context(), &recordingReporter{}, uri, nil, types.FormattingOptions{})
 }

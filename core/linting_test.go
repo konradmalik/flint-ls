@@ -141,7 +141,7 @@ func TestLinting(t *testing.T) {
 	}
 }
 
-func TestDiagnosticsResetOnEachRun(t *testing.T) {
+func TestDiagnosticsPublishedOncePerLinter(t *testing.T) {
 	base, _ := os.Getwd()
 	file := filepath.Join(base, "foo")
 	uri := ParseLocalFileToURI(file)
@@ -170,9 +170,10 @@ func TestDiagnosticsResetOnEachRun(t *testing.T) {
 	pd, err := h.getAllPublishDiagnosticsParamsForUriWithEvent(t, uri, types.EventTypeSave)
 	assert.NoError(t, err)
 
-	assert.Len(t, pd, 2)
-	assert.Empty(t, pd[0].Diagnostics)
-	assert.NotEmpty(t, pd[1].Diagnostics)
+	// no empty publish up front: it would make every diagnostic blink out on
+	// each run, and erase those of linters the run does not include
+	require.Len(t, pd, 1)
+	assert.NotEmpty(t, pd[0].Diagnostics)
 }
 
 // TestDiagnosticsOfEveryLinterSurvive covers a document linted by more than one
@@ -215,13 +216,12 @@ func TestDiagnosticsOfEveryLinterSurvive(t *testing.T) {
 	pd, err := h.getAllPublishDiagnosticsParamsForUriWithEvent(t, uri, types.EventTypeSave)
 	assert.NoError(t, err)
 
-	// the reset, then one publish per linter
-	require.Len(t, pd, 3)
-	assert.Empty(t, pd[0].Diagnostics)
-	assert.Len(t, pd[1].Diagnostics, 1, "the first linter to finish reports what it found")
+	// one publish per linter
+	require.Len(t, pd, 2)
+	assert.Len(t, pd[0].Diagnostics, 1, "the first linter to finish reports what it found")
 
 	messages := make([]string, 0, 2)
-	for _, d := range pd[2].Diagnostics {
+	for _, d := range pd[1].Diagnostics {
 		messages = append(messages, d.Message)
 	}
 	slices.Sort(messages)
@@ -285,9 +285,84 @@ func TestSupersededRunPublishesNothing(t *testing.T) {
 	cancel()
 	require.NoError(t, <-done)
 
-	published := reporter.publishedDiagnostics()
-	require.Len(t, published, 1, "a cancelled run must publish nothing beyond its initial reset")
-	assert.Empty(t, published[0].Diagnostics)
+	assert.Empty(t, reporter.publishedDiagnostics(), "a cancelled run must publish nothing")
+}
+
+// TestDiagnosticsOfLintersOutsideTheRunSurvive covers a linter that only runs on
+// save next to one that runs on every change. A keystroke runs only the second,
+// and every publish replaces the client's whole set, so unless that publish
+// carries what the save-only linter last found, its findings vanish until the
+// next save.
+func TestDiagnosticsOfLintersOutsideTheRunSurvive(t *testing.T) {
+	h, uri := newTwoLinterHandler(t)
+
+	pd, err := h.getAllPublishDiagnosticsParamsForUriWithEvent(t, uri, types.EventTypeSave)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"on change", "on save"}, diagnosticMessages(pd[len(pd)-1].Diagnostics))
+
+	pd, err = h.getAllPublishDiagnosticsParamsForUriWithEvent(t, uri, types.EventTypeChange)
+	require.NoError(t, err)
+	require.Len(t, pd, 1, "only the change linter ran")
+	assert.Equal(t, []string{"on change", "on save"}, diagnosticMessages(pd[0].Diagnostics),
+		"the save-only linter's findings were erased by a run it took no part in")
+}
+
+// TestLintResultsDroppedWithConfiguration covers results keyed by a config's
+// position, which a new configuration gives a different meaning: a linter that
+// is gone must not keep haunting the document.
+func TestLintResultsDroppedWithConfiguration(t *testing.T) {
+	h, uri := newTwoLinterHandler(t)
+
+	_, err := h.getAllPublishDiagnosticsParamsForUriWithEvent(t, uri, types.EventTypeSave)
+	require.NoError(t, err)
+
+	h.UpdateConfiguration(&types.Config{Languages: map[string][]types.Language{
+		"vim": {{LintCommand: "echo 1:replacement", LintFormats: []string{"%l:%m"}, LintStdin: true, LintIgnoreExitCode: true}},
+	}})
+
+	pd, err := h.getAllPublishDiagnosticsParamsForUriWithEvent(t, uri, types.EventTypeChange)
+	require.NoError(t, err)
+	require.Len(t, pd, 1)
+	assert.Equal(t, []string{"replacement"}, diagnosticMessages(pd[0].Diagnostics))
+}
+
+// TestLintResultsDroppedWithDocument covers a document closed and opened again:
+// it starts over, rather than with what its linters said about its old text.
+func TestLintResultsDroppedWithDocument(t *testing.T) {
+	h, uri := newTwoLinterHandler(t)
+
+	_, err := h.getAllPublishDiagnosticsParamsForUriWithEvent(t, uri, types.EventTypeSave)
+	require.NoError(t, err)
+
+	h.CloseFile(uri)
+	require.NoError(t, h.OpenFile(uri, "vim", 1, "x\n"))
+
+	pd, err := h.getAllPublishDiagnosticsParamsForUriWithEvent(t, uri, types.EventTypeChange)
+	require.NoError(t, err)
+	require.Len(t, pd, 1)
+	assert.Equal(t, []string{"on change"}, diagnosticMessages(pd[0].Diagnostics))
+}
+
+func newTwoLinterHandler(t *testing.T) (*LangHandler, types.DocumentURI) {
+	t.Helper()
+
+	onSaveOnly := false
+	h := NewHandler(map[string][]types.Language{"vim": {
+		{LintCommand: "echo 1:on change", LintFormats: []string{"%l:%m"}, LintStdin: true, LintIgnoreExitCode: true},
+		{LintCommand: "echo 1:on save", LintFormats: []string{"%l:%m"}, LintStdin: true, LintIgnoreExitCode: true, LintOnChange: &onSaveOnly},
+	}})
+	uri := ParseLocalFileToURI(filepath.Join(t.TempDir(), "a.vim"))
+	require.NoError(t, h.OpenFile(uri, "vim", 1, "x\n"))
+
+	return h, uri
+}
+
+func diagnosticMessages(diagnostics []types.Diagnostic) []string {
+	messages := make([]string, 0, len(diagnostics))
+	for _, d := range diagnostics {
+		messages = append(messages, d.Message)
+	}
+	return messages
 }
 
 // TestLintPathNeedingQuoting covers a filename that the shell would mangle if it

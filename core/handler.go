@@ -23,6 +23,13 @@ type LangHandler struct {
 	configs  map[string][]types.Language
 	files    map[types.DocumentURI]*fileRef
 	rootPath string
+
+	// publishMu serialises storing a linter's result with publishing the set it
+	// belongs to, so the client receives the sets in the order they were built.
+	// It is taken before mu and never while holding it, and it is not mu itself
+	// because a publish writes to the client, which must never stall the read
+	// loop that applies document changes.
+	publishMu sync.Mutex
 }
 
 type fileRef struct {
@@ -31,6 +38,14 @@ type fileRef struct {
 	LanguageID         string
 	Text               string
 	Uri                types.DocumentURI
+
+	// lintResults holds the latest diagnostics of every linter that has reported
+	// for the document, keyed by linterKey. A publish replaces the client's whole
+	// set, so it is always the union of these: a run that does not include some
+	// linter -- one that only lints on save, during a keystroke -- must not erase
+	// what that linter last said. Dropped with the document, and with the
+	// configuration that the keys index into.
+	lintResults map[linterKey][]types.Diagnostic
 }
 
 // documentSnapshot is a consistent, read-only view of everything a lint or
@@ -81,7 +96,11 @@ func (h *LangHandler) snapshot(uri types.DocumentURI) (documentSnapshot, error) 
 		return documentSnapshot{}, fmt.Errorf("document not found: %v", uri)
 	}
 
-	return documentSnapshot{file: *f, configs: h.configs, rootPath: h.rootPath}, nil
+	file := *f
+	// only ever read under mu, which a snapshot is for not needing
+	file.lintResults = nil
+
+	return documentSnapshot{file: file, configs: h.configs, rootPath: h.rootPath}, nil
 }
 
 // NewHandler returns a handler for the given language configuration. Passing nil
@@ -151,6 +170,10 @@ func (h *LangHandler) UpdateConfiguration(config *types.Config) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	h.configs = config.Languages
+	// the keys index into the configuration that was just replaced
+	for _, f := range h.files {
+		f.lintResults = nil
+	}
 }
 
 func (h *LangHandler) CloseFile(uri types.DocumentURI) {
@@ -197,10 +220,17 @@ func (h *LangHandler) UpdateFile(uri types.DocumentURI, text string, version *in
 	return nil
 }
 
+// linterKey identifies a config by its position among those that apply to a
+// language: its own configs first, then the wildcard ones. Positions are only
+// stable for one configuration, which is why results keyed by them are dropped
+// when it changes.
+type linterKey int
+
 // resolvedConfig is a language config together with the working directory its
 // tool will run in.
 type resolvedConfig struct {
 	types.Language
+	key      linterKey
 	rootPath string
 }
 
@@ -214,7 +244,7 @@ type resolvedConfig struct {
 // config requiring a marker may run at all and where its tool should run.
 func (s documentSnapshot) resolveConfigs(keep func(types.Language) bool) []resolvedConfig {
 	var configs []resolvedConfig
-	for _, cfg := range slices.Concat(s.configs[s.file.LanguageID], s.configs[types.Wildcard]) {
+	for i, cfg := range slices.Concat(s.configs[s.file.LanguageID], s.configs[types.Wildcard]) {
 		if !keep(cfg) {
 			continue
 		}
@@ -227,7 +257,7 @@ func (s documentSnapshot) resolveConfigs(keep func(types.Language) bool) []resol
 			dir = s.rootPath
 		}
 
-		configs = append(configs, resolvedConfig{Language: cfg, rootPath: dir})
+		configs = append(configs, resolvedConfig{Language: cfg, key: linterKey(i), rootPath: dir})
 	}
 
 	return configs

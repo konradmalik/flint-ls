@@ -20,6 +20,17 @@ const (
 	carriageReturn      = "\r"
 )
 
+// isPathPlaceholder reports whether s is one of the placeholders that
+// replaceMagicStrings fills in.
+func isPathPlaceholder(s string) bool {
+	switch s {
+	case inputPlaceholder, fileextPlaceholder, filenamePlaceholder, rootPlaceholder:
+		return true
+	default:
+		return false
+	}
+}
+
 func normalizedFilenameFromUri(uri types.DocumentURI) (string, error) {
 	fname, err := PathFromURI(uri)
 	if err != nil {

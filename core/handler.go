@@ -15,9 +15,9 @@ import (
 // LangHandler owns the document store and the language configuration.
 //
 // Document sync notifications arrive on the connection's read loop while lint
-// and format runs execute on their own goroutines, so every field below is
-// guarded by mu. Long running work must never hold mu: it takes a snapshot
-// first (see snapshot) and operates on that.
+// and format runs execute on their own goroutines, so every field up to
+// publishMu is guarded by mu. Long running work must never hold mu: it takes a
+// snapshot first (see snapshot) and operates on that.
 type LangHandler struct {
 	mu      sync.RWMutex
 	configs map[string][]types.Language
@@ -132,7 +132,8 @@ func (h *LangHandler) snapshot(uri types.DocumentURI) (documentSnapshot, error) 
 
 func (h *LangHandler) snapshotLocked(f *fileRef) documentSnapshot {
 	file := *f
-	// only ever read under mu, which a snapshot is for not needing
+	// shared with the document and only safe to touch under mu, which is exactly
+	// what a snapshot is for not holding
 	file.lintResults = nil
 
 	return documentSnapshot{file: file, configs: h.configs, configGen: h.configGen, rootPath: h.rootPath}
@@ -164,22 +165,19 @@ func (h *LangHandler) Initialize(params types.InitializeParams) (types.Initializ
 		h.rootPath = filepath.Clean(rootPath)
 	}
 
-	var hasFormatCommand bool
-	var hasRangeFormatCommand bool
-
+	// a client that sends its configuration only after initialize says up front
+	// what it is going to need
+	var hasFormatCommand, hasRangeFormatCommand bool
 	if params.InitializationOptions != nil {
 		hasFormatCommand = params.InitializationOptions.DocumentFormatting
 		hasRangeFormatCommand = params.InitializationOptions.RangeFormatting
 	}
 
-	for _, config := range h.configs {
-		for _, lang := range config {
+	for _, langs := range h.configs {
+		for _, lang := range langs {
 			if lang.FormatCommand != "" {
 				hasFormatCommand = true
-				if lang.FormatCanRange {
-					hasRangeFormatCommand = true
-					break
-				}
+				hasRangeFormatCommand = hasRangeFormatCommand || lang.FormatCanRange
 			}
 		}
 	}

@@ -115,10 +115,10 @@ func TestBuildCommandLeavesPlaceholdersInFilenamesAlone(t *testing.T) {
 	opts := types.FormattingOptions{"tabSize": 2}
 	rng := &types.Range{End: types.Position{Character: 1}}
 
-	cmdStr := buildFormatCommandString("/root", "/root/${--x:tabSize}${--y:charEnd}${junk}.js", "text", opts, rng,
-		"fmt ${--indent:tabSize} ${INPUT}")
+	file := "/root/${--x:tabSize}${--y:charEnd}${junk}.js"
+	cmdStr := buildFormatCommandString("/root", file, "text", opts, rng, "fmt ${--indent:tabSize} ${INPUT}")
 
-	assert.Equal(t, "fmt --indent 2 '/root/${--x:tabSize}${--y:charEnd}${junk}.js'", cmdStr)
+	assert.Equal(t, "fmt --indent 2 "+shellQuote(file), cmdStr)
 }
 
 func TestBuildCommandHandlesPlaceholders(t *testing.T) {
@@ -246,6 +246,36 @@ func TestRunFormattersEndsProgressWhenEveryFormatterFails(t *testing.T) {
 	require.NoError(t, err)
 	assert.Contains(t, string(last), `"kind":"end"`)
 	assert.Equal(t, events[0].Token, events[1].Token)
+}
+
+// TestRunFormattersSkipsAFailingFormatter covers a stack where one formatter
+// fails: the others still apply, and when all of them fail the error says why
+// each did, exit status and stderr both.
+func TestRunFormattersSkipsAFailingFormatter(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the format commands below are written as POSIX shell commands")
+	}
+
+	testfile := filepath.Join(t.TempDir(), "text.txt")
+	uri := ParseLocalFileToURI(testfile)
+
+	failing := types.Language{FormatCommand: "echo broken config >&2; exit 3"}
+	h := NewHandler(map[string][]types.Language{"go": {
+		failing,
+		{FormatCommand: "tr a-z A-Z"},
+	}})
+	require.NoError(t, h.OpenFile(uri, "go", 1, "hello\n"))
+
+	edits, err := h.runAllFormatters(t, uri)
+	require.NoError(t, err)
+	require.Len(t, edits, 1)
+	assert.Equal(t, "HELLO\n", edits[0].NewText)
+
+	h.UpdateConfiguration(&types.Config{Languages: map[string][]types.Language{"go": {failing}}})
+	_, err = h.runAllFormatters(t, uri)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "exit status 3")
+	assert.Contains(t, err.Error(), "broken config")
 }
 
 func (h *LangHandler) runAllFormatters(t *testing.T, uri types.DocumentURI) ([]types.TextEdit, error) {

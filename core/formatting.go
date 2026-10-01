@@ -3,9 +3,9 @@ package core
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"maps"
-	"os/exec"
 	"regexp"
 	"strings"
 	"unicode/utf16"
@@ -14,13 +14,8 @@ import (
 	"github.com/konradmalik/flint-ls/types"
 )
 
-var (
-	reUnfilledPlaceholders = regexp.MustCompile(`\${[^}]*}`)
-	// ${--flag:opt}
-	reColon = regexp.MustCompile(`\$\{([^:}]+):([^}]+)\}`)
-	// ${--flag=opt}
-	reEquals = regexp.MustCompile(`\$\{([^=}]+)=([^}]+)\}`)
-)
+// rePlaceholder matches any ${...} placeholder.
+var rePlaceholder = regexp.MustCompile(`\$\{[^}]*\}`)
 
 // RunAllFormatters runs every configured formatter for uri in sequence, each
 // one fed the previous one's output, and returns the edits that turn the
@@ -52,26 +47,22 @@ func (h *LangHandler) RunAllFormatters(
 		Value: types.NewWorkDoneProgressEnd(nil),
 	})
 
-	originalText := f.Text
-	formattedText := originalText
-	formatted := false
-
-	errors := make([]string, 0)
+	// a formatter that fails is skipped, and the rest carry on from the text it
+	// was given; only when every one of them fails is there nothing to return
+	formattedText := f.Text
+	var failures []error
 	for _, config := range configs {
 		newText, err := formatDocument(ctx, config.rootPath, f.NormalizedFilename, formattedText, rng, options, config.Language)
-
 		if err != nil {
-			errors = append(errors, err.Error())
 			logs.Log.Logln(logs.Error, err.Error())
+			failures = append(failures, err)
 			continue
 		}
-
-		formatted = true
 		formattedText = newText
 	}
 
-	if !formatted {
-		return nil, fmt.Errorf("could not format for LanguageID: %s. All errors: %v", f.LanguageID, errors)
+	if len(failures) == len(configs) {
+		return nil, fmt.Errorf("could not format for LanguageID: %s: %w", f.LanguageID, errors.Join(failures...))
 	}
 
 	// the edits below are a diff against the text the formatters started from, so
@@ -87,64 +78,78 @@ func (h *LangHandler) RunAllFormatters(
 
 	logs.Log.Logln(logs.Info, "format succeeded")
 
-	return ComputeEdits(originalText, formattedText)
+	return ComputeEdits(f.Text, formattedText)
 }
 
-// this needs to accept textToFormat because in case we have multiple formatters, we can pass previous formatted text.
-// otherwise, we'd format the original file over and over.
+// formatDocument runs one formatter on textToFormat, which is the output of the
+// formatter before it rather than the document, so that formatters stack.
 func formatDocument(ctx context.Context, rootPath string, filename string, textToFormat string, rng *types.Range, options types.FormattingOptions, config types.Language) (string, error) {
 	cmdStr := buildFormatCommandString(rootPath, filename, textToFormat, options, rng, config.FormatCommand)
 	cmd := buildExecCmd(ctx, cmdStr, rootPath, config.Env, strings.NewReader(textToFormat))
-	out, err := runFormattingCommand(cmd)
+
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	out, err := cmd.Output()
 
 	logs.Log.Logln(logs.Info, cmdStr)
-	logs.Log.Logln(logs.Debug, out)
+	logs.Log.Logln(logs.Debug, string(out))
 
 	if err != nil {
-		return "", fmt.Errorf("formatting error: %s", err)
+		// the exit status says how it failed, stderr what the tool had to say
+		return "", fmt.Errorf("formatting error: %s: %w: %s", cmdStr, err, strings.TrimSpace(stderr.String()))
 	}
 
-	return strings.ReplaceAll(out, carriageReturn, ""), nil
+	return strings.ReplaceAll(string(out), carriageReturn, ""), nil
 }
 
-func resolveOptionsPlaceholder(re *regexp.Regexp, match string, options map[string]any, sep string) string {
-	parts := re.FindStringSubmatch(match)
-	flag, opt := parts[1], parts[2]
-
-	neg := strings.HasPrefix(opt, "!")
-	key := strings.TrimPrefix(opt, "!")
-
-	v, ok := options[key]
-	if !ok {
-		return match // no option found
-	}
-
-	switch b := v.(type) {
-	case bool:
-		if b == !neg { // bool true and not negated, or bool false and negated
-			return flag
+// applyOptionsPlaceholders fills in the ${flag:option} and ${flag=option}
+// placeholders of command from values, and drops every other placeholder except
+// the paths, which replaceMagicStrings fills in afterwards.
+func applyOptionsPlaceholders(command string, values map[string]any) string {
+	command = rePlaceholder.ReplaceAllStringFunc(command, func(placeholder string) string {
+		if isPathPlaceholder(placeholder) {
+			return placeholder
 		}
-		return "" // remove placeholder
-	default:
-		if neg {
-			return "" // negated default makes no sense
-		}
-		return fmt.Sprintf("%s%s%v", flag, sep, v)
-	}
-}
-
-func applyOptionsPlaceholders(command string, options map[string]any) string {
-	// Handle : syntax (flag:value)
-	command = reColon.ReplaceAllStringFunc(command, func(match string) string {
-		return resolveOptionsPlaceholder(reColon, match, options, " ")
-	})
-
-	// Handle = syntax (flag=value)
-	command = reEquals.ReplaceAllStringFunc(command, func(match string) string {
-		return resolveOptionsPlaceholder(reEquals, match, options, "=")
+		return optionArgument(placeholder[len("${"):len(placeholder)-len("}")], values)
 	})
 
 	return strings.TrimSpace(command)
+}
+
+// optionArgument renders the body of an option placeholder: flag:option becomes
+// "flag value", flag=option becomes "flag=value", and a bool option becomes the
+// bare flag when true -- or when false, for an option negated as !option. An
+// option without a value, or that is not one, renders as nothing.
+func optionArgument(body string, values map[string]any) string {
+	i := strings.IndexAny(body, ":=")
+	if i <= 0 {
+		return ""
+	}
+	flag, opt := body[:i], body[i+1:]
+	sep := " "
+	if body[i] == '=' {
+		sep = "="
+	}
+
+	negated := strings.HasPrefix(opt, "!")
+	v, ok := values[strings.TrimPrefix(opt, "!")]
+	if !ok {
+		return ""
+	}
+
+	switch v := v.(type) {
+	case bool:
+		if v != negated {
+			return flag
+		}
+		return ""
+	default:
+		if negated {
+			// negating a value that is not true or false means nothing
+			return ""
+		}
+		return fmt.Sprintf("%s%s%v", flag, sep, v)
+	}
 }
 
 // rangeValues are the values a ranged format fills option placeholders with.
@@ -172,26 +177,7 @@ func buildFormatCommandString(rootPath string, filename string, textToFormat str
 	}
 	command = applyOptionsPlaceholders(command, values)
 
-	// whatever is left is a placeholder the client gave no value for, apart from
-	// the paths that have yet to go in
-	command = reUnfilledPlaceholders.ReplaceAllStringFunc(command, func(placeholder string) string {
-		if isPathPlaceholder(placeholder) {
-			return placeholder
-		}
-		return ""
-	})
-
 	return replaceMagicStrings(command, filename, rootPath)
-}
-
-func runFormattingCommand(cmd *exec.Cmd) (string, error) {
-	var buf bytes.Buffer
-	cmd.Stderr = &buf
-	b, err := cmd.Output()
-	if err != nil {
-		return "", fmt.Errorf("%s: %s", strings.Join(cmd.Args, " "), buf.String())
-	}
-	return string(b), nil
 }
 
 // byteOffset converts an lsp position into an offset into the text the lines

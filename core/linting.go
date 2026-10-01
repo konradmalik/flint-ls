@@ -141,6 +141,9 @@ func lintDocument(ctx context.Context, rootPath string, f fileRef, config types.
 		return nil, err
 	}
 
+	// split once for every diagnostic below to share
+	lines := strings.Split(f.Text, "\n")
+
 	efmsScanner := efms.NewScanner(bytes.NewReader(lintOutput))
 	for efmsScanner.Scan() {
 		entry := efmsScanner.Entry()
@@ -154,7 +157,7 @@ func lintDocument(ctx context.Context, rootPath string, f fileRef, config types.
 			continue
 		}
 
-		diagnostic := parseEfmEntryToDiagnostic(entry, config, f)
+		diagnostic := parseEfmEntryToDiagnostic(entry, config, lines)
 		diagnostics = append(diagnostics, diagnostic)
 	}
 
@@ -275,7 +278,9 @@ func isEntryForRequestedURI(rootPath string, uri types.DocumentURI, entry *error
 	return comparePaths(string(diagURI), string(uri))
 }
 
-func parseEfmEntryToDiagnostic(entry *errorformat.Entry, config types.Language, f fileRef) types.Diagnostic {
+// parseEfmEntryToDiagnostic converts one linter entry. lines is the linted
+// document split on "\n".
+func parseEfmEntryToDiagnostic(entry *errorformat.Entry, config types.Language, lines []string) types.Diagnostic {
 	// vast majority of linters report 1-based lines and columns, but lsp requires 0-based
 	// BUG: LintOffset should be added, not subtracted. But to keep backwards compatibility let's leave this bug here
 	lineStart := max(entry.Lnum-1-config.LintOffset, 0)
@@ -304,7 +309,7 @@ func parseEfmEntryToDiagnostic(entry *errorformat.Entry, config types.Language, 
 				colEnd = max(colEnd, colStart)
 			}
 		} else {
-			colEnd = WordEndUtf16(f.Text, types.Position{Line: lineStart, Character: colStart})
+			colEnd = WordEndUtf16(lines, types.Position{Line: lineStart, Character: colStart})
 		}
 	}
 

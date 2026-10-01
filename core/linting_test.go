@@ -1105,7 +1105,7 @@ func TestParseEfmEntryToDiagnostic(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			diag := parseEfmEntryToDiagnostic(tt.entry, *tt.cfg, *file)
+			diag := parseEfmEntryToDiagnostic(tt.entry, *tt.cfg, strings.Split(file.Text, "\n"))
 			assert.Equal(t, tt.expected.Message, diag.Message)
 			assert.Equal(t, tt.expected.Severity, diag.Severity)
 			assert.Equal(t, tt.expected.Range.Start.Line, diag.Range.Start.Line)

@@ -1,7 +1,6 @@
 package core
 
 import (
-	"strings"
 	"unicode"
 	"unicode/utf16"
 
@@ -32,11 +31,14 @@ const (
 // pos.Character is returned unchanged when pos points past the end of the line,
 // which gives an empty range instead of one highlighting something arbitrary.
 //
+// lines is the document split on "\n". It is taken split rather than whole
+// because a linter can report hundreds of diagnostics, and splitting the
+// document again for every one of them made linting a large file quadratic.
+//
 // lsp can now select encoding from the list that clients send that they support,
 // but utf16 is selected if the server does not send it and is required for
 // backwards compatibility, so offsets here are utf16 code units.
-func WordEndUtf16(text string, pos types.Position) int {
-	lines := strings.Split(text, "\n")
+func WordEndUtf16(lines []string, pos types.Position) int {
 	if pos.Line < 0 || pos.Line >= len(lines) || pos.Character < 0 {
 		return pos.Character
 	}
